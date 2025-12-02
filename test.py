@@ -1,13 +1,41 @@
-bank_names = (
-    mfos.assign(BANKID = mfos["BANKID"].astype(str).str.replace(r"\D", "", regex=True))
-        .set_index("BANKID")["NAME"]
-        .to_dict()
+# ID мерчанта
+merged["MERCHANT_ID"] = merged.apply(
+    lambda row: row["CONTRAGENTAID"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["CONTRAGENTBID"],
+    axis=1
 )
 
-def convert_bank_used_to_names(value):
-    s = str(value)
-    parts = [x.strip() for x in s.split(",")]
-    names = [bank_names.get(code, code) for code in parts]
-    return ", ".join(names)
+# Назва мерчанта
+merged["MERCHANT_NAME"] = merged.apply(
+    lambda row: row["CONTRAGENTASNAME"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["CONTRAGENTBSNAME"],
+    axis=1
+)
 
-summary["bank_used"] = summary["bank_used"].apply(convert_bank_used_to_names)
+# Ідентифікаційний код мерчанта
+merged["MERCHANT_IDENTIFYCODE"] = merged.apply(
+    lambda row: row["CONTRAGENTAIDENTIFYCODE"] if row["TYPE"] == "DEBIT_SELF_ACQ"
+    else row["CONTRAGENTBIDENTIFYCODE"],
+    axis=1
+)
+
+# Банк мерчанта
+merged["MERCHANT_BANK"] = merged.apply(
+    lambda row: row["BANKBID"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["BANKAID"],
+    axis=1
+)
+
+
+summary = (
+    merged.groupby(["MERCHANT_IDENTIFYCODE", "TYPE"])
+    .agg(
+        n_txn=("SUMMAEQ", "count"),
+        total_sum=("SUMMAEQ", "sum"),
+        months_active=("PERIOD", "nunique"),
+        last_month=("PERIOD", "max"),
+        MERCHANT_NAME=("MERCHANT_NAME", "first"),
+        MERCHANT_ID=("MERCHANT_ID", "first"),
+        MERCHANT_BANK=("MERCHANT_BANK", lambda x: ", ".join(sorted(set(str(v) for v in x))))
+    )
+    .reset_index()
+    .sort_values("total_sum", ascending=False)
+)
+
