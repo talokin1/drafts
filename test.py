@@ -1,35 +1,13 @@
-merged["CLIENT_ID"] = merged.apply(
-    lambda row: (
-        row["CONTRAGENTAIDENTIFYCODE"] 
-        if row["TYPE"] == "DEBIT_SELF_ACQ" 
-        else row["CONTRAGENTBIDENTIFYCODE"]
-    ), 
-    axis=1
+bank_names = (
+    mfos.assign(BANKID = mfos["BANKID"].astype(str).str.replace(r"\D", "", regex=True))
+        .set_index("BANKID")["NAME"]
+        .to_dict()
 )
 
+def convert_bank_used_to_names(value):
+    s = str(value)
+    parts = [x.strip() for x in s.split(",")]
+    names = [bank_names.get(code, code) for code in parts]
+    return ", ".join(names)
 
-merged["CLIENT_NAME"] = merged.apply(
-    lambda row: (
-        row["CONTRAGENTASNAME"]
-        if row["TYPE"] == "DEBIT_SELF_ACQ"
-        else row["CONTRAGENTBSNAME"]
-    ),
-    axis=1
-)
-
-
-summary = (
-    merged.groupby("CLIENT_ID")
-    .agg(
-        n_txn=("SUMMAEQ", "count"),
-        debit_sum=("SUMMAEQ", lambda x: x[merged.loc[x.index, "TYPE"]=="DEBIT_SELF_ACQ"].sum()),
-        credit_sum=("SUMMAEQ", lambda x: x[merged.loc[x.index, "TYPE"]=="CREDIT_SELF_ACQ"].sum()),
-        total_abs_sum=("SUMMAEQ", lambda x: x.abs().sum()),
-        months_active=("PERIOD", "nunique"),
-        last_month=("PERIOD", "max"),
-        client_name=("CLIENT_NAME", "first"),
-        banks_used=("BANKBID", lambda x: ", ".join(sorted(set(x))))
-    )
-    .reset_index()
-    .sort_values("total_abs_sum", ascending=False)
-)
+summary["bank_used"] = summary["bank_used"].apply(convert_bank_used_to_names)
