@@ -1,41 +1,43 @@
-# ID мерчанта
-merged["MERCHANT_ID"] = merged.apply(
-    lambda row: row["CONTRAGENTAID"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["CONTRAGENTBID"],
-    axis=1
-)
+import pandas as pd
 
-# Назва мерчанта
-merged["MERCHANT_NAME"] = merged.apply(
-    lambda row: row["CONTRAGENTASNAME"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["CONTRAGENTBSNAME"],
-    axis=1
-)
+dfs = {
+    'jan_liabs_variant_1': jan_liabs,
+    'feb_liabs_variant_1': feb_liabs,
+    'mar_liabs_variant_1': mar_liabs,
+    'apr_liabs_variant_1': apr_liabs,
+    'may_liabs_variant_1': may_liabs,
+    'jun_liabs_variant_1': jun_liabs,
+    'jul_liabs_variant_1': jul_liabs,
+    'aug_liabs_variant_1': aug_liabs,
 
-# Ідентифікаційний код мерчанта
-merged["MERCHANT_IDENTIFYCODE"] = merged.apply(
-    lambda row: row["CONTRAGENTAIDENTIFYCODE"] if row["TYPE"] == "DEBIT_SELF_ACQ"
-    else row["CONTRAGENTBIDENTIFYCODE"],
-    axis=1
-)
+    'jan_assets_variant_1': jan_assets,
+    'feb_assets_variant_1': feb_assets,
+    'mar_assets_variant_1': mar_assets,
+    'apr_assets_variant_1': apr_assets,
+    'may_assets_variant_1': may_assets,
+    'jun_assets_variant_1': jun_assets,
+    'jul_assets_variant_1': jul_assets,
+    'aug_assets_variant_1': aug_assets,
+}
 
-# Банк мерчанта
-merged["MERCHANT_BANK"] = merged.apply(
-    lambda row: row["BANKBID"] if row["TYPE"] == "DEBIT_SELF_ACQ" else row["BANKAID"],
-    axis=1
-)
+with pd.ExcelWriter('FTP_Variant_1.xlsx', engine='xlsxwriter') as writer:
+    for sheet_name, df in dfs.items():
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
 
+        workbook = writer.book
+        worksheet = writer.sheets[sheet_name]
 
-summary = (
-    merged.groupby(["MERCHANT_IDENTIFYCODE", "TYPE"])
-    .agg(
-        n_txn=("SUMMAEQ", "count"),
-        total_sum=("SUMMAEQ", "sum"),
-        months_active=("PERIOD", "nunique"),
-        last_month=("PERIOD", "max"),
-        MERCHANT_NAME=("MERCHANT_NAME", "first"),
-        MERCHANT_ID=("MERCHANT_ID", "first"),
-        MERCHANT_BANK=("MERCHANT_BANK", lambda x: ", ".join(sorted(set(str(v) for v in x))))
-    )
-    .reset_index()
-    .sort_values("total_sum", ascending=False)
-)
+        # Автоширина колонок
+        for i, col in enumerate(df.columns):
+            max_len = max(df[col].astype(str).map(len).max(), len(col))
+            worksheet.set_column(i, i, max_len + 2)
 
+        # Стилізована таблиця
+        worksheet.add_table(
+            0, 0,
+            df.shape[0], df.shape[1]-1,
+            {
+                'columns': [{'header': col} for col in df.columns],
+                'style': 'Table Style Medium 2'
+            }
+        )
