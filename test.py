@@ -81,3 +81,32 @@ df = pd.concat([df, df_authorized_expanded], axis=1)
 df
 
 
+summary["is_debit"] = summary["TYPE"].str.contains("DEBIT", case=False, na=False)
+summary["is_credit"] = summary["TYPE"].str.contains("CREDIT", case=False, na=False)
+
+# Агрегація по дебетових
+debit = (
+    summary[summary["is_debit"]]
+    .groupby("CLIENT_IDENTIFYCODE")
+    .agg(debit_count=("n_txn", "sum"))
+)
+
+# Агрегація по кредитових
+credit = (
+    summary[summary["is_credit"]]
+    .groupby("CLIENT_IDENTIFYCODE")
+    .agg(credit_count=("n_txn", "sum"))
+)
+
+# З'єднання з клієнтами
+pivot_clients = (
+    clients[["CLIENT_IDENTIFYCODE", "SEGMENT"]]
+    .merge(debit, on="CLIENT_IDENTIFYCODE", how="left")
+    .merge(credit, on="CLIENT_IDENTIFYCODE", how="left")
+)
+
+# Заповнюємо NaN нулями
+pivot_clients = pivot_clients.fillna(0)
+
+
+
