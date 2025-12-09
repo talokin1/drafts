@@ -1,17 +1,20 @@
 def find_columns_with_authorized(df):
-    authorized_columns = []
+    authorized_columns = ["Уповноважені особи"]  # базова колонка
 
     for col in df.columns:
+        if col == "Уповноважені особи":
+            continue  # вже додана
+
         for val in df[col]:
             parsed = safe_parse(val)
 
-            # list of dicts
+            # список словників
             if isinstance(parsed, list):
                 if any(isinstance(item, dict) and "Роль" in item for item in parsed):
                     authorized_columns.append(col)
                     break
 
-            # single dict
+            # окремий словник
             elif isinstance(parsed, dict):
                 if "Роль" in parsed:
                     authorized_columns.append(col)
@@ -68,9 +71,13 @@ def expand_authorized_column(df, source_col="Authorized", max_items=10):
     return pd.DataFrame.from_dict(result, orient="index")
 
 authorized_cols = find_columns_with_authorized(df)
+print("Знайдені колонки з Уповноваженими особами:", authorized_cols)
+
 df = extract_all_authorized(df, authorized_cols)
 
 df_authorized_expanded = expand_authorized_column(df, "Authorized", max_items=10)
 
 df = pd.concat([df, df_authorized_expanded], axis=1)
 df
+
+
