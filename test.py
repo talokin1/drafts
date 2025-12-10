@@ -1,13 +1,6 @@
-type_stats = (
-    merged.groupby("TYPE")
-    .agg(
-        clients=("CLIENT_IDENTIFYCODE", "nunique"),
-        total_sum=("SUMMAEQ", "sum")
-    )
-    .reset_index()
+df["TYPE_NEW"] = np.where(
+    df["CONTRAGENTAIDENTIFYCODE"].astype(str)
+        == df["CONTRAGENTBIDENTIFYCODE"].astype(str),
+    "CREDIT_SELF_ACQ",
+    "DEBIT_SELF_ACQ"
 )
-type_stats.loc["TOTAL"] = [
-    "TOTAL",
-    summary["CLIENT_IDENTIFYCODE"].nunique(),
-    merged["SUMMAEQ"].sum()
-]
