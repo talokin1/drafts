@@ -1,112 +1,40 @@
-def find_columns_with_authorized(df):
-    authorized_columns = ["Уповноважені особи"]  # базова колонка
-
-    for col in df.columns:
-        if col == "Уповноважені особи":
-            continue  # вже додана
-
-        for val in df[col]:
-            parsed = safe_parse(val)
-
-            # список словників
-            if isinstance(parsed, list):
-                if any(isinstance(item, dict) and "Роль" in item for item in parsed):
-                    authorized_columns.append(col)
-                    break
-
-            # окремий словник
-            elif isinstance(parsed, dict):
-                if "Роль" in parsed:
-                    authorized_columns.append(col)
-                    break
-
-    return authorized_columns
-
-
-def extract_all_authorized(df, authorized_cols):
-    authorized_list = []
-
-    for idx, row in df.iterrows():
-        combined = []
-
-        for col in authorized_cols:
-            parsed = safe_parse(row[col])
-
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict) and "Роль" in item:
-                        combined.append(item)
-
-            elif isinstance(parsed, dict):
-                if "Роль" in parsed:
-                    combined.append(parsed)
-
-        authorized_list.append(combined)
-
-    df["Authorized"] = authorized_list
-    return df
-
-df["Authorized"].apply(lambda x: isinstance(x, list) and len(x)==0).sum()
-
-
-def expand_authorized_column(df, source_col="Authorized", max_items=10):
-    result = {}
-
-    for idx, val in df[source_col].items():
-        entry = {}
-
-        if not isinstance(val, list):
-            result[idx] = entry
-            continue
-
-        for i, person in enumerate(val[:max_items], start=1):
-            if not isinstance(person, dict):
-                continue
-
-            entry[f"Authorized_{i}_Name"] = person.get("ПІБ")
-            entry[f"Authorized_{i}_Role"] = person.get("Роль")
-
-        result[idx] = entry
-
-    return pd.DataFrame.from_dict(result, orient="index")
-
-authorized_cols = find_columns_with_authorized(df)
-print("Знайдені колонки з Уповноваженими особами:", authorized_cols)
-
-df = extract_all_authorized(df, authorized_cols)
-
-df_authorized_expanded = expand_authorized_column(df, "Authorized", max_items=10)
-
-df = pd.concat([df, df_authorized_expanded], axis=1)
-df
-
-
-summary["is_debit"] = summary["TYPE"].str.contains("DEBIT", case=False, na=False)
-summary["is_credit"] = summary["TYPE"].str.contains("CREDIT", case=False, na=False)
-
-# Агрегація по дебетових
-debit = (
-    summary[summary["is_debit"]]
-    .groupby("CLIENT_IDENTIFYCODE")
-    .agg(debit_count=("n_txn", "sum"))
+# розбиваємо на два набори
+debit_clients = (
+    merged_[merged_["TYPE"] == "DEBIT_SELF_ACQ"]
+    .groupby("SEGMENT")["CLIENT_IDENTIFYCODE"]
+    .unique()
 )
 
-# Агрегація по кредитових
-credit = (
-    summary[summary["is_credit"]]
-    .groupby("CLIENT_IDENTIFYCODE")
-    .agg(credit_count=("n_txn", "sum"))
+credit_clients = (
+    merged_[merged_["TYPE"] == "CREDIT_SELF_ACQ"]
+    .groupby("SEGMENT")["CLIENT_IDENTIFYCODE"]
+    .unique()
 )
 
-# З'єднання з клієнтами
-pivot_clients = (
-    clients[["CLIENT_IDENTIFYCODE", "SEGMENT"]]
-    .merge(debit, on="CLIENT_IDENTIFYCODE", how="left")
-    .merge(credit, on="CLIENT_IDENTIFYCODE", how="left")
-)
+# перетин клієнтів
+intersection = {
+    seg: set(debit_clients.get(seg, [])) & set(credit_clients.get(seg, []))
+    for seg in merged_["SEGMENT"].unique()
+}
 
-# Заповнюємо NaN нулями
-pivot_clients = pivot_clients.fillna(0)
+intersection
 
+intersection_count = {
+    seg: len(intersection[seg])
+    for seg in intersection
+}
 
+intersection_count
 
+rows = []
+for seg in intersection:
+    rows.append({
+        "SEGMENT": seg,
+        "clients_in_both": len(intersection[seg]),
+        "clients_only_debit": len(set(debit_clients.get(seg, [])) - set(credit_clients.get(seg, []))),
+        "clients_only_credit": len(set(credit_clients.get(seg, [])) - set(debit_clients.get(seg, []))),
+        "total_unique_clients": len(set(debit_clients.get(seg, [])) | set(credit_clients.get(seg, [])))
+    })
+
+intersection_df = pd.DataFrame(rows)
+intersection_df
