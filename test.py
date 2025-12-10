@@ -1,40 +1,46 @@
-# розбиваємо на два набори
-debit_clients = (
-    merged_[merged_["TYPE"] == "DEBIT_SELF_ACQ"]
-    .groupby("SEGMENT")["CLIENT_IDENTIFYCODE"]
-    .unique()
-)
+debit = merged_[merged_["TYPE"] == "DEBIT_SELF_ACQ"][["SEGMENT", "CLIENT_IDENTIFYCODE"]]
+credit = merged_[merged_["TYPE"] == "CREDIT_SELF_ACQ"][["SEGMENT", "CLIENT_IDENTIFYCODE"]]
 
-credit_clients = (
-    merged_[merged_["TYPE"] == "CREDIT_SELF_ACQ"]
-    .groupby("SEGMENT")["CLIENT_IDENTIFYCODE"]
-    .unique()
-)
+# групуємо по сегменту
+debit_grp = debit.groupby("SEGMENT")["CLIENT_IDENTIFYCODE"].apply(set)
+credit_grp = credit.groupby("SEGMENT")["CLIENT_IDENTIFYCODE"].apply(set)
 
-# перетин клієнтів
-intersection = {
-    seg: set(debit_clients.get(seg, [])) & set(credit_clients.get(seg, []))
+# перетин клієнтів у кожному сегменті
+duplicates_per_segment = {
+    seg: debit_grp.get(seg, set()) & credit_grp.get(seg, set())
     for seg in merged_["SEGMENT"].unique()
 }
 
-intersection
+dup_rows = []
 
-intersection_count = {
-    seg: len(intersection[seg])
-    for seg in intersection
-}
-
-intersection_count
-
-rows = []
-for seg in intersection:
-    rows.append({
+for seg in duplicates_per_segment:
+    dup_rows.append({
         "SEGMENT": seg,
-        "clients_in_both": len(intersection[seg]),
-        "clients_only_debit": len(set(debit_clients.get(seg, [])) - set(credit_clients.get(seg, []))),
-        "clients_only_credit": len(set(credit_clients.get(seg, [])) - set(debit_clients.get(seg, []))),
-        "total_unique_clients": len(set(debit_clients.get(seg, [])) | set(credit_clients.get(seg, [])))
+        "clients_in_both_types": len(duplicates_per_segment[seg]),
+        "clients_only_debit": len(debit_grp.get(seg, set()) - credit_grp.get(seg, set())),
+        "clients_only_credit": len(credit_grp.get(seg, set()) - debit_grp.get(seg, set())),
+        "total_unique_clients": len(debit_grp.get(seg, set()) | credit_grp.get(seg, set()))
     })
 
-intersection_df = pd.DataFrame(rows)
-intersection_df
+duplicates_summary = pd.DataFrame(dup_rows)
+duplicates_summary
+
+
+duplicate_clients_table = []
+
+for seg in duplicates_per_segment:
+    for client in duplicates_per_segment[seg]:
+        duplicate_clients_table.append({
+            "SEGMENT": seg,
+            "CLIENT_IDENTIFYCODE": client
+        })
+
+duplicate_clients_table = pd.DataFrame(duplicate_clients_table)
+duplicate_clients_table
+
+
+segment_stats["clients_in_both_types"] = segment_stats["SEGMENT"].map(
+    lambda seg: len(duplicates_per_segment.get(seg, set()))
+)
+
+segment_stats
