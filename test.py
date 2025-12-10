@@ -1,26 +1,45 @@
-df_banks = summary.copy()
+df = summary.copy()
 
-# explode by bank
-df_banks["bank"] = df_banks["bank_used"].str.split(",\s*")
-df_banks = df_banks.explode("bank")
+df["MFO_list"] = df["MFO"].astype(str).str.split(",\s*")
 
-banks_clients = (
-    df_banks.groupby("bank")["CLIENT_IDENTIFYCODE"]
-    .nunique()
-    .reset_index(name="clients")
+df = df.explode("MFO_list")
+df["MFO_list"] = df["MFO_list"].astype(int)
+
+df = df.merge(
+    mfos[["MFO", "NAME"]],
+    left_on="MFO_list",
+    right_on="MFO",
+    how="left"
 )
 
-banks_txn = (
-    merged.groupby("BANK_USED")
-    .agg(
-        n_txn=("SUMMAEQ", "count"),
-        total_sum=("SUMMAEQ", "sum")
-    )
-    .reset_index()
+df.rename(columns={"NAME": "bank_name"}, inplace=True)
+
+bank_clients = (
+    df.groupby("bank_name")["CLIENT_IDENTIFYCODE"]
+      .nunique()
+      .reset_index(name="clients")
 )
 
-banks_final = (
-    banks_clients
-    .merge(banks_txn, left_on="bank", right_on="BANK_USED", how="left")
-    .drop(columns=["BANK_USED"])
+bank_txn = (
+    merged.groupby("BANK_USED")   # або BANKID / BANK_USED – твоя колонка з МФО
+        .agg(
+            n_txn=("SUMMAEQ", "count"),
+            total_sum=("SUMMAEQ", "sum")
+        )
+        .reset_index()
 )
+bank_txn = bank_txn.merge(
+    mfos[["MFO", "NAME"]],
+    left_on="BANK_USED",
+    right_on="MFO",
+    how="left"
+).rename(columns={"NAME": "bank_name"})
+
+banks_final = bank_clients.merge(
+    bank_txn[["bank_name", "n_txn", "total_sum"]],
+    on="bank_name",
+    how="left"
+)
+
+banks_final = banks_final.sort_values("clients", ascending=False)
+banks_final
