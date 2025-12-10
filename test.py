@@ -1,19 +1,13 @@
-banks_final = bank_clients.merge(
-    bank_txn[["bank_name", "n_txn", "total_sum"]],
-    on="bank_name",
-    how="left"
-)
-
-# 🔥 КЛЮЧОВЕ — прибираємо дублікати, які породив merge
-banks_final = (
-    banks_final
-    .groupby("bank_name", as_index=False)
+type_stats = (
+    merged.groupby("TYPE")
     .agg(
-        clients=("clients", "max"),        # бо значення однакові
-        n_txn=("n_txn", "sum"),            # сумуємо транзакції
-        total_sum=("total_sum", "sum")     # сумуємо суми
+        clients=("CLIENT_IDENTIFYCODE", "nunique"),
+        total_sum=("SUMMAEQ", "sum")
     )
+    .reset_index()
 )
-
-banks_final = banks_final.sort_values("clients", ascending=False)
-banks_final
+type_stats.loc["TOTAL"] = [
+    "TOTAL",
+    summary["CLIENT_IDENTIFYCODE"].nunique(),
+    merged["SUMMAEQ"].sum()
+]
