@@ -1,68 +1,123 @@
-import ast
-import pandas as pd
+buckets = {
+    "authorized": [],
+    "founders": [],
+    "beneficiaries": [],
+    "kveds": [],
+    "bankruptcy": None,
+    "tax": {},
+    "finance": {},
+    "msb": {},
+    "meta": []
+}
 
-COL_AUTH = "Уповноважені особи"
-COL_FOUN = "Засновники"
-COL_BEN  = "Бенефіціари"
 
-def to_list_of_dicts(x):
-    if pd.isna(x) or x in ("", "[]"):
-        return []
-    if isinstance(x, list):
-        return x
+import ast, re, pandas as pd
+
+def parse_money(x):
+    if not isinstance(x, str):
+        return None
+    m = re.search(r"([\d\s.,]+)\s*тис\.грн", x)
+    if m:
+        return float(m.group(1).replace(" ", "").replace(",", ".")) * 1000
+    return None
+
+def detect_cell(x):
+    if pd.isna(x):
+        return "empty", None
+
     if isinstance(x, str):
-        x = x.strip()
-        if not x.startswith("["):
-            return []  # типу "Діє на підставі..." — не наш формат
-        try:
-            v = ast.literal_eval(x)
-            return v if isinstance(v, list) else []
-        except Exception:
-            return []
-    return []
+        s = x.strip()
 
-def classify(lst):
-    """Повертає 'auth'/'found'/'ben'/'unknown' по ключах."""
-    if not lst:
-        return "unknown"
-    keys = set()
-    for d in lst:
-        if isinstance(d, dict):
-            keys |= set(d.keys())
+        # списки людей
+        if s.startswith("[") and "ПІБ" in s:
+            try:
+                return "list", ast.literal_eval(s)
+            except:
+                return "noise", s
 
-    if ("Роль" in keys) and ("ПІБ" in keys):
-        return "auth"
-    if ("ПІБ / Назва" in keys) or ("Розмір внеску" in keys):
-        return "found"
-    if ("Тип володіння" in keys) or ("Частка" in keys):
-        return "ben"
+        if "Код КВЕД" in s:
+            return "kved", s
 
-    # fallback-и (на випадок урізаних структур)
-    if "Роль" in keys:
-        return "auth"
-    if "ПІБ / Назва" in keys:
-        return "found"
-    if "ПІБ" in keys and ("Країна" in keys):
-        return "ben"
+        if "Немає інформації про банкрутство" in s:
+            return "bankruptcy", s
 
-    return "unknown"
+        if "Податкові дані" in s:
+            return "tax_block", s
 
-def repair_row(row):
-    a = to_list_of_dicts(row.get(COL_AUTH))
-    f = to_list_of_dicts(row.get(COL_FOUN))
-    b = to_list_of_dicts(row.get(COL_BEN))
+        if "Не є платником ПДВ" in s or "платником ПДВ" in s:
+            return "vat", s
 
-    buckets = {"auth": [], "found": [], "ben": []}
+        if "тис.грн" in s:
+            return "money", s
 
-    for lst in (a, f, b):
-        t = classify(lst)
-        if t in buckets and lst:
-            # якщо раптом два списки одного типу — склеїмо
-            buckets[t].extend(lst)
+        if re.match(r"\d{2}\.\d{2}\.\d{4}", s):
+            return "date", s
 
-    row[COL_AUTH] = buckets["auth"]
-    row[COL_FOUN] = buckets["found"]
-    row[COL_BEN]  = buckets["ben"]
-    return row
+        if s.isdigit():
+            return "number", int(s)
 
-df = df.apply(repair_row, axis=1)
+        return "text", s
+
+    return "unknown", x
+
+
+def rebuild_row(row):
+    out = {
+        "authorized": [],
+        "founders": [],
+        "beneficiaries": [],
+        "kveds": [],
+        "bankruptcy": None,
+        "vat_status": None,
+        "income": None,
+        "net_profit": None,
+        "assets": None,
+        "liabilities": None,
+        "salary_debt": None,
+        "msb_score": None,
+        "msb_level": None,
+        "meta": []
+    }
+
+    for cell in row.values:
+        kind, val = detect_cell(cell)
+
+        if kind == "list":
+            keys = set().union(*(d.keys() for d in val if isinstance(d, dict)))
+            if "Роль" in keys:
+                out["authorized"].extend(val)
+            elif "ПІБ / Назва" in keys:
+                out["founders"].extend(val)
+            elif "Тип володіння" in keys or "Частка" in keys:
+                out["beneficiaries"].extend(val)
+
+        elif kind == "kved":
+            out["kveds"].append(val)
+
+        elif kind == "bankruptcy":
+            out["bankruptcy"] = val
+
+        elif kind == "vat":
+            out["vat_status"] = val
+
+        elif kind == "money":
+            m = parse_money(val)
+            if out["income"] is None:
+                out["income"] = m
+            elif out["assets"] is None:
+                out["assets"] = m
+            elif out["liabilities"] is None:
+                out["liabilities"] = m
+            else:
+                out["salary_debt"] = m
+
+        elif kind == "text":
+            out["meta"].append(val)
+
+        elif kind == "number":
+            if out["msb_level"] is None:
+                out["msb_level"] = val
+
+    return out
+
+clean_df = pd.DataFrame(df.apply(rebuild_row, axis=1).tolist())
