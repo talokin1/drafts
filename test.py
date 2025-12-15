@@ -1,20 +1,20 @@
-STATUS_MAP = {
-    "Зареєстровано": "ACTIVE",
+temp = temp.rename(columns={
+    "Актуально на": "ubki_actual_date",
+    "Останні зміни": "registry_last_change_date"
+})
 
-    "В стані припинення": "SUSPENDED",
+temp["ubki_update_lag_days"] = (
+    temp["ubki_actual_date"] - temp["registry_last_change_date"]
+).dt.days
 
-    "Припинено": "TERMINATED",
-    "Скасовано": "TERMINATED",
-    "Архівний": "ARCHIVED",
+today_ref = temp["ubki_actual_date"].max()
 
-    "Порушено справу про банкрутство": "BANKRUPTCY",
-    "Порушено справу про банкрутство (санація)": "BANKRUPTCY",
+temp["days_since_registry_change"] = (
+    today_ref - temp["registry_last_change_date"]
+).dt.days
 
-    "Зареєстровано, свідоцтво про державну реєстрацію недійсне": "INVALID_REGISTRATION",
-}
+today_ref = temp["ubki_actual_date"].max()
 
-temp["status_std"] = (
-    temp["Статус"]
-    .map(STATUS_MAP)
-    .fillna("OTHER")
-)
+temp["days_since_registry_change"] = (
+    today_ref - temp["registry_last_change_date"]
+).dt.days
