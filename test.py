@@ -1,17 +1,18 @@
 import pandas as pd
 import ast
+import re
 
 # =========================
 # CONFIG
 # =========================
-MAX_FOUNDERS = 5
-FOUNDERS_COL = "founders"
+MAX_BENEFICIARIES = 5
+BENEFICIARIES_COL = "beneficiaries"
 
 
 # =========================
 # SAFE PARSER
 # =========================
-def parse_founders(cell):
+def parse_beneficiaries(cell):
     """
     Повертає list[dict] або [].
     Працює з NaN, list, str.
@@ -42,19 +43,35 @@ def parse_founders(cell):
 
 
 # =========================
+# SHARE PARSER
+# =========================
+def parse_share(raw):
+    """
+    'відсоток частки - 30.0' -> 30.0
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+
+    m = re.search(r"([\d.]+)", raw)
+    return float(m.group(1)) if m else None
+
+
+# =========================
 # EXPAND FUNCTION
 # =========================
-def expand_founders(cell):
-    data = parse_founders(cell)
+def expand_beneficiaries(cell):
+    data = parse_beneficiaries(cell)
     out = {}
 
-    for i in range(MAX_FOUNDERS):
+    for i in range(MAX_BENEFICIARIES):
         person = data[i] if i < len(data) else None
 
         if isinstance(person, dict):
-            out[f"founder_{i+1}"] = person.get("ПІБ / Назва")
+            out[f"beneficiary_{i+1}"] = person.get("ПІБ")
+            out[f"share_{i+1}"] = parse_share(person.get("Частка"))
         else:
-            out[f"founder_{i+1}"] = None
+            out[f"beneficiary_{i+1}"] = None
+            out[f"share_{i+1}"] = None
 
     return pd.Series(out)
 
@@ -62,10 +79,10 @@ def expand_founders(cell):
 # =========================
 # MAIN TRANSFORM
 # =========================
-def split_founders_wide(df: pd.DataFrame) -> pd.DataFrame:
-    expanded = df[FOUNDERS_COL].apply(expand_founders)
+def split_beneficiaries_wide(df: pd.DataFrame) -> pd.DataFrame:
+    expanded = df[BENEFICIARIES_COL].apply(expand_beneficiaries)
     df_out = pd.concat(
-        [df.drop(columns=[FOUNDERS_COL]), expanded],
+        [df.drop(columns=[BENEFICIARIES_COL]), expanded],
         axis=1
     )
     return df_out
@@ -75,6 +92,6 @@ def split_founders_wide(df: pd.DataFrame) -> pd.DataFrame:
 # USAGE
 # =========================
 # result = pd.read_csv("your_file.csv")
-result = split_founders_wide(result)
+result = split_beneficiaries_wide(result)
 
 result
