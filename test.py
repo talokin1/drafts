@@ -2,96 +2,61 @@ import pandas as pd
 import ast
 import re
 
-# =========================
-# CONFIG
-# =========================
-MAX_BENEFICIARIES = 5
-BENEFICIARIES_COL = "beneficiaries"
+MAX_KVEDS = 5
+KVED_COL = "kveds"
 
+def parse_kveds(cell):
+    if cell is None or (isinstance(cell, float) and pd.isna(cell)):
+        return []
 
-# =========================
-# SAFE PARSER
-# =========================
-def parse_beneficiaries(cell):
-    """
-    Повертає list[dict] або [].
-    Працює з NaN, list, str.
-    """
-
-    # якщо вже список
     if isinstance(cell, list):
-        return cell
-
-    # None / NaN
-    if cell is None:
-        return []
-    if isinstance(cell, float) and pd.isna(cell):
+        raw = " ".join(cell)
+    elif isinstance(cell, str):
+        raw = cell.strip()
+    else:
         return []
 
-    # строка
-    if isinstance(cell, str):
-        s = cell.strip()
-        if s == "" or s.lower() == "nan":
-            return []
-        try:
-            parsed = ast.literal_eval(s)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
+    try:
+        parsed = ast.literal_eval(raw)
+        if isinstance(parsed, list):
+            raw = " ".join(parsed)
+    except Exception:
+        pass
 
-    return []
+    raw = raw.replace("Код КВЕД", "").strip()
+    parts = [p.strip() for p in raw.split(";") if p.strip()]
 
+    result = []
+    for p in parts:
+        m = re.match(r"([\d.]+)\s+(.*)", p)
+        if m:
+            result.append((m.group(1), m.group(2)))
 
-# =========================
-# SHARE PARSER
-# =========================
-def parse_share(raw):
-    """
-    'відсоток частки - 30.0' -> 30.0
-    """
-    if not raw or not isinstance(raw, str):
-        return None
+    return result
 
-    m = re.search(r"([\d.]+)", raw)
-    return float(m.group(1)) if m else None
-
-
-# =========================
-# EXPAND FUNCTION
-# =========================
-def expand_beneficiaries(cell):
-    data = parse_beneficiaries(cell)
+def expand_kveds(cell):
+    data = parse_kveds(cell)
     out = {}
 
-    for i in range(MAX_BENEFICIARIES):
-        person = data[i] if i < len(data) else None
-
-        if isinstance(person, dict):
-            out[f"beneficiary_{i+1}"] = person.get("ПІБ")
-            out[f"share_{i+1}"] = parse_share(person.get("Частка"))
+    for i in range(MAX_KVEDS):
+        if i < len(data):
+            code, descr = data[i]
+            if i == 0:
+                out["KVED"] = code
+                out["KVED_DESCR"] = descr
+            else:
+                out[f"KVED_{i+1}"] = code
+                out[f"KVED_{i+1}_DESCR"] = descr
         else:
-            out[f"beneficiary_{i+1}"] = None
-            out[f"share_{i+1}"] = None
+            if i == 0:
+                out["KVED"] = None
+                out["KVED_DESCR"] = None
+            else:
+                out[f"KVED_{i+1}"] = None
+                out[f"KVED_{i+1}_DESCR"] = None
 
     return pd.Series(out)
 
-
-# =========================
-# MAIN TRANSFORM
-# =========================
-def split_beneficiaries_wide(df: pd.DataFrame) -> pd.DataFrame:
-    expanded = df[BENEFICIARIES_COL].apply(expand_beneficiaries)
-    df_out = pd.concat(
-        [df.drop(columns=[BENEFICIARIES_COL]), expanded],
-        axis=1
-    )
-    return df_out
-
-
-# =========================
-# USAGE
-# =========================
-# result = pd.read_csv("your_file.csv")
-result = split_beneficiaries_wide(result)
-
+expanded = result[KVED_COL].apply(expand_kveds)
+result = pd.concat([result.drop(columns=[KVED_COL]), expanded], axis=1)
 result
