@@ -1,43 +1,88 @@
 import pandas as pd
 import ast
 
-def parse_authorized(cell):
-    if pd.isna(cell) or cell.strip() == "":
-        return []
-    try:
-        return ast.literal_eval(cell)
-    except Exception:
-        return []
-
-df["authorized_parsed"] = df["authorized"].apply(parse_authorized)
-
-rows = []
-
-for _, row in df.iterrows():
-    company_id = row["ID"]
-    for i, person in enumerate(row["authorized_parsed"], start=1):
-        rows.append({
-            "ID": company_id,
-            "person_idx": i,
-            "pib": person.get("ПІБ"),
-            "role": person.get("Роль")
-        })
-
-authorized_df = pd.DataFrame(rows)
-
+# =========================
+# CONFIG
+# =========================
 MAX_PERSONS = 5
+AUTHORIZED_COL = "authorized"
+ID_COL = "IDENTIFYCODE"
 
+
+# =========================
+# SAFE PARSER
+# =========================
+def parse_authorized(cell):
+    """
+    Повертає list[dict] або [].
+    Безпечно для NaN, list, str, будь-чого.
+    """
+
+    # якщо вже список
+    if isinstance(cell, list):
+        return cell
+
+    # None / NaN
+    if cell is None:
+        return []
+    if isinstance(cell, float) and pd.isna(cell):
+        return []
+
+    # строка
+    if isinstance(cell, str):
+        s = cell.strip()
+        if s == "" or s.lower() == "nan":
+            return []
+        try:
+            parsed = ast.literal_eval(s)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
+    # все інше
+    return []
+
+
+# =========================
+# EXPAND FUNCTION
+# =========================
 def expand_authorized(cell):
     data = parse_authorized(cell)
     out = {}
+
     for i in range(MAX_PERSONS):
-        if i < len(data):
-            out[f"pib_{i+1}"] = data[i].get("ПІБ")
-            out[f"role_{i+1}"] = data[i].get("Роль")
+        person = data[i] if i < len(data) else None
+
+        if isinstance(person, dict):
+            out[f"pib_{i+1}"] = person.get("ПІБ")
+            out[f"role_{i+1}"] = person.get("Роль")
         else:
             out[f"pib_{i+1}"] = None
             out[f"role_{i+1}"] = None
+
     return pd.Series(out)
 
-expanded = df["authorized"].apply(expand_authorized)
-df = pd.concat([df.drop(columns=["authorized"]), expanded], axis=1)
+
+# =========================
+# MAIN TRANSFORM
+# =========================
+def split_authorized_wide(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Видаляє колонку `authorized`
+    і додає pib_1 / role_1 ... pib_5 / role_5
+    """
+    expanded = df[AUTHORIZED_COL].apply(expand_authorized)
+    df_out = pd.concat(
+        [df.drop(columns=[AUTHORIZED_COL]), expanded],
+        axis=1
+    )
+    return df_out
+
+
+# =========================
+# USAGE
+# =========================
+# result = pd.read_csv("your_file.csv")   # якщо треба
+result = split_authorized_wide(result)
+
+result
