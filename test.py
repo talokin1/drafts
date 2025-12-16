@@ -4,18 +4,17 @@ import ast
 # =========================
 # CONFIG
 # =========================
-MAX_PERSONS = 5
-AUTHORIZED_COL = "authorized"
-ID_COL = "IDENTIFYCODE"
+MAX_FOUNDERS = 5
+FOUNDERS_COL = "founders"
 
 
 # =========================
 # SAFE PARSER
 # =========================
-def parse_authorized(cell):
+def parse_founders(cell):
     """
     Повертає list[dict] або [].
-    Безпечно для NaN, list, str, будь-чого.
+    Працює з NaN, list, str.
     """
 
     # якщо вже список
@@ -39,26 +38,23 @@ def parse_authorized(cell):
         except Exception:
             return []
 
-    # все інше
     return []
 
 
 # =========================
 # EXPAND FUNCTION
 # =========================
-def expand_authorized(cell):
-    data = parse_authorized(cell)
+def expand_founders(cell):
+    data = parse_founders(cell)
     out = {}
 
-    for i in range(MAX_PERSONS):
+    for i in range(MAX_FOUNDERS):
         person = data[i] if i < len(data) else None
 
         if isinstance(person, dict):
-            out[f"pib_{i+1}"] = person.get("ПІБ")
-            out[f"role_{i+1}"] = person.get("Роль")
+            out[f"founder_{i+1}"] = person.get("ПІБ / Назва")
         else:
-            out[f"pib_{i+1}"] = None
-            out[f"role_{i+1}"] = None
+            out[f"founder_{i+1}"] = None
 
     return pd.Series(out)
 
@@ -66,14 +62,10 @@ def expand_authorized(cell):
 # =========================
 # MAIN TRANSFORM
 # =========================
-def split_authorized_wide(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Видаляє колонку `authorized`
-    і додає pib_1 / role_1 ... pib_5 / role_5
-    """
-    expanded = df[AUTHORIZED_COL].apply(expand_authorized)
+def split_founders_wide(df: pd.DataFrame) -> pd.DataFrame:
+    expanded = df[FOUNDERS_COL].apply(expand_founders)
     df_out = pd.concat(
-        [df.drop(columns=[AUTHORIZED_COL]), expanded],
+        [df.drop(columns=[FOUNDERS_COL]), expanded],
         axis=1
     )
     return df_out
@@ -82,7 +74,7 @@ def split_authorized_wide(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # USAGE
 # =========================
-# result = pd.read_csv("your_file.csv")   # якщо треба
-result = split_authorized_wide(result)
+# result = pd.read_csv("your_file.csv")
+result = split_founders_wide(result)
 
 result
