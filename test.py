@@ -1,19 +1,22 @@
-def is_acquiring_only(series):
-    s = series.fillna("").str.lower()
+def detect_credit_acquiring(df, period):
+    df = df.copy()
 
-    result = pd.Series(False, index=s.index)
+    # 1. Кредитова операція: кошти зайшли в OTP
+    is_credit = df["BANKBID"] == MFO_OTP
 
-    mask_text = s.str.contains(
-        r"(екв|acq|acquiring)",
-        regex=True
-    )
+    # 2. Відправник НЕ OTP (тобто зовнішнє зарахування)
+    is_not_otp_sender = df["BANKAID"] != MFO_OTP
 
-    mask_2924 = s.str.contains(
-        r"(покрит\w*|вируч\w*).{0,40}2924",
-        regex=True
-    )
+    # 3. Еквайринг по тексту / бух. формулюваннях
+    is_acq_text = is_acquiring_only(df["PLATPURPOSE"])
 
-    result |= mask_text
-    result |= mask_2924
+    # 4. Фінальний фільтр (БЕЗ перевірки ЄДРПОУ)
+    result = df[
+        is_credit &
+        is_not_otp_sender &
+        is_acq_text
+    ].copy()
 
-    return result
+    result["PERIOD"] = period
+
+    return result.drop_duplicates()
