@@ -1,29 +1,18 @@
-import numpy as np
+import pandas as pd
 
-# 1. Зсув всієї шкали NPS: 0–9 → 1–10
-nps_data["score_adj"] = nps_data["Оцінка"] + 1
+def normalize_ids(df, id_cols=("IDENTIFYCODE", "CONTRAGENTID")):
+    df = df.copy()
 
-# 2. Введення no_info = 0 (якщо були NaN у сирих даних)
-nps_data.loc[nps_data["Оцінка"].isna(), "score_adj"] = 0
+    for col in id_cols:
+        if col not in df.columns:
+            continue
 
-# 3. Класифікація NPS (класична логіка)
-def nps_class(score):
-    if score == 0:
-        return "no_info"
-    elif score == 10:
-        return "prom"
-    elif score >= 8:
-        return "neutr"
-    else:
-        return "detr"
+        df[col] = (
+            pd.to_numeric(df[col], errors="coerce")
+              .dropna()
+              .astype("uint32")
+              .astype(str)
+              .str.zfill(8)
+        )
 
-nps_data["NPS"] = nps_data["score_adj"].apply(nps_class)
-
-# 4. Контрольні перевірки
-display(
-    nps_data["score_adj"].value_counts().sort_index()
-)
-
-display(
-    nps_data["NPS"].value_counts()
-)
+    return df
