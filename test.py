@@ -1,15 +1,16 @@
 import numpy as np
 
-nps_data["score_adj"] = np.where(
-    nps_data["Оцінка"] == 0,
-    0,                       # No_info
-    nps_data["Оцінка"] + 1   # зсув 1–10
-)
+# 1. Зсув всієї шкали NPS: 0–9 → 1–10
+nps_data["score_adj"] = nps_data["Оцінка"] + 1
 
+# 2. Введення no_info = 0 (якщо були NaN у сирих даних)
+nps_data.loc[nps_data["Оцінка"].isna(), "score_adj"] = 0
+
+# 3. Класифікація NPS (класична логіка)
 def nps_class(score):
     if score == 0:
         return "no_info"
-    elif score >= 10:
+    elif score == 10:
         return "prom"
     elif score >= 8:
         return "neutr"
@@ -18,6 +19,7 @@ def nps_class(score):
 
 nps_data["NPS"] = nps_data["score_adj"].apply(nps_class)
 
+# 4. Контрольні перевірки
 display(
     nps_data["score_adj"].value_counts().sort_index()
 )
