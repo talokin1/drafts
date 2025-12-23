@@ -1,91 +1,124 @@
 import numpy as np
 import pandas as pd
 
-from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder, FunctionTransformer
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
+from sklearn.pipeline import Pipeline
 
+# =========================
+# 1. COPY DATA
+# =========================
+df = data.copy()
 
-def build_preprocessor(df: pd.DataFrame):
+# =========================
+# 2. TARGET
+# =========================
+TARGET = "MONTHLY_INCOME"
 
-    # -----------------------------
-    # DROP ID + LEAKAGE
-    # -----------------------------
-    drop_cols = [
-        "CONTRAGENTID",
-        "IDENTIFYCODE",
-        "OTP_AV_LIAB_2025_11",
-        "OTP_TURN_2025_11",
-        "RATIO_OTP_OTH_2025_11",
-        "LOANS_LIMIT",
-        "LOANS_AVG",
+df = df[df[TARGET].notna()]
+y = np.log1p(df[TARGET])
+X = df.drop(columns=[TARGET])
+
+# =========================
+# 3. DROP TECHNICAL IDS
+# =========================
+drop_cols = [
+    "CONTRAGENTID",
+    "IDENTIFYCODE"
+]
+
+X = X.drop(columns=[c for c in drop_cols if c in X.columns])
+
+# =========================
+# 4. COLUMN GROUPS
+# =========================
+categorical_cols = [
+    "SEGMENT",
+    "FIRM_KVED"
+]
+
+ratio_cols = [
+    "PRIMARY_LIABS",
+    "0_LIABS",
+    "0-100K_LIABS",
+    "100K-500K_LIABS",
+    "5M-10M_LIABS",
+    ">10M_LIABS",
+    "10M+_LIABS",
+    "RATIO_OTP_OTH_2025_11"
+]
+
+monetary_cols = [
+    "OTP_AV_LIAB_2025_11",
+    "OTP_TURN_2025_11",
+    "OTH_BANKS_TURN_2025_11",
+    "LOANS_AVG",
+    "LOANS_LIMIT",
+    "ASSETS_SUIT_AMT"
+]
+
+count_cols = [
+    "NB_CARDS_2025_11",
+    "NB_ACCOUNTS_2025_11",
+    "NB_SAVINGS_2025_11",
+    "NB_DEPOSITS_2025_11",
+    "NB_ACCOUNTS_OVER_2",
+    "NB_LOANS_2025_11"
+]
+
+score_cols = [
+    "MSB_SCORE"
+]
+
+# =========================
+# 5. TRANSFORMERS
+# =========================
+log_transformer = FunctionTransformer(
+    func=lambda x: np.log1p(x),
+    feature_names_out="one-to-one"
+)
+
+cat_transformer = OrdinalEncoder(
+    handle_unknown="use_encoded_value",
+    unknown_value=-1
+)
+
+# =========================
+# 6. COLUMN TRANSFORMER
+# =========================
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("cat", cat_transformer, categorical_cols),
+        ("log_money", log_transformer, monetary_cols),
+        ("ratio", "passthrough", ratio_cols),
+        ("counts", "passthrough", count_cols),
+        ("scores", "passthrough", score_cols),
+    ],
+    remainder="drop",
+    verbose_feature_names_out=False
+)
+
+# =========================
+# 7. PIPELINE (READY FOR LGB)
+# =========================
+pipeline = Pipeline(
+    steps=[
+        ("prep", preprocessor)
     ]
+)
 
-    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+# =========================
+# 8. TRAIN / VALID SPLIT
+# =========================
+X_train, X_valid, y_train, y_valid = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42
+)
 
-    binary_map = {
-        "NB_CARDS_2025_11": "has_cards",
-        "NB_LOANS_2025_11": "has_loans",
-        "NB_DEPOSITS_2025_11": "has_deposits",
-        "NB_SAVINGS_2025_11": "has_savings",
-        "NB_ACCOUNTS_2025_11": "has_accounts",
-    }
+X_train_prep = pipeline.fit_transform(X_train)
+X_valid_prep = pipeline.transform(X_valid)
 
-    for src, dst in binary_map.items():
-        if src in df.columns:
-            df[dst] = (df[src] > 0).astype(int)
-            df.drop(columns=src, inplace=True)
-
-    if "MONTHLY_INCOME" in df.columns:
-        df["MONTHLY_INCOME"] = df["MONTHLY_INCOME"].clip(lower=0)
-        df["log_monthly_income"] = np.log1p(df["MONTHLY_INCOME"])
-        df.drop(columns="MONTHLY_INCOME", inplace=True)
-
-    if "OTH_BANKS_TURN_2025_11" in df.columns:
-        df["log_oth_banks_turn"] = np.log1p(df["OTH_BANKS_TURN_2025_11"])
-        df.drop(columns="OTH_BANKS_TURN_2025_11", inplace=True)
-
-
-    asset_bins = [
-        "0_ASSETS", "0-5M_ASSETS", "5M-10M_ASSETS",
-        "10M-20M_ASSETS", "15M-30M_ASSETS",
-        "20M-30M_ASSETS", ">30M_ASSETS"
-    ]
-    df.drop(columns=[c for c in asset_bins if c in df.columns], inplace=True)
-
-    categorical_ordinal = ["SEGMENT"]
-    categorical_ohe = ["FIRM_KVED"]
-
-    categorical_ordinal = [c for c in categorical_ordinal if c in df.columns]
-    categorical_ohe = [c for c in categorical_ohe if c in df.columns]
-
-    numeric_features = [
-        c for c in df.columns
-        if c not in categorical_ordinal + categorical_ohe
-    ]
-
-    ordinal_encoder = OrdinalEncoder(
-        handle_unknown="use_encoded_value",
-        unknown_value=-1
-    )
-
-    onehot_encoder = OneHotEncoder(
-        handle_unknown="ignore",
-        sparse_output=False,
-        min_frequency=10  # 🔑 захист від explosion
-    )
-
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("ord", ordinal_encoder, categorical_ordinal),
-            ("ohe", onehot_encoder, categorical_ohe),
-            ("num", "passthrough", numeric_features),
-        ],
-        remainder="drop"
-    )
-
-    return df, preprocessor
-
-X_raw, preprocessor = build_preprocessor(df)
-
-X = preprocessor.fit_transform(X_raw)
+feature_names = pipeline.named_steps["prep"].get_feature_names_out()
