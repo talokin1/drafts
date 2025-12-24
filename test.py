@@ -1,17 +1,3 @@
-RE_CMPS = re.compile(
-    r"\b(cmps|cmp)\b",
-    re.IGNORECASE
-)
-
-RE_CMPS_CONTEXT = re.compile(
-    r"""
-    (відшк\w*|екв\b|еквайр\w*|
-     покрит\w*|коміс\w*|ком\.?\s*бан|
-     к-?ть\s*тр|кільк\w*\s*тр|
-     acquir\w*)
-    """,
-    re.IGNORECASE | re.VERBOSE
-)
 def detect_acquiring(row):
     pp = row.get("PLATPURPOSE", "") or ""
     cp = row.get("CONTRAGENTSANAME", "") or ""
@@ -19,6 +5,18 @@ def detect_acquiring(row):
     text = f"{pp} {cp}".lower()
     reasons = []
 
+    # --- flags ---
+    pp_has_cmps = RE_CMPS.search(pp) is not None
+
+    pp_has_strong_acq = any([
+        RE_OPER_ACQ.search(pp),
+        RE_REFUND.search(pp),
+        RE_COVERAGE.search(pp),
+        RE_TYPE_ACQ.search(pp),
+        RE_CASH.search(pp),
+    ])
+
+    # --- main rules ---
     if RE_TYPE_ACQ.search(text):
         reasons.append("type_acquiring")
 
@@ -31,8 +29,7 @@ def detect_acquiring(row):
     if RE_COVERAGE.search(text):
         reasons.append("cards_coverage")
 
-    # ✅ cmps only with context
-    if RE_CMPS.search(pp) and RE_CMPS_CONTEXT.search(text):
+    if RE_COMMISSION.search(text):
         reasons.append("commission")
 
     if RE_CASH.search(text):
@@ -43,6 +40,20 @@ def detect_acquiring(row):
 
     if RE_COUNTERPARTY.search(cp):
         reasons.append("counterparty_name")
+
+    # === 🔴 CMPS GUARD (єдина нова логіка) ===
+    if pp_has_cmps and not pp_has_strong_acq:
+        cp_has_acq = any([
+            RE_INTERNET_ACQ_CP.search(cp),
+            RE_COUNTERPARTY.search(cp),
+            RE_TYPE_ACQ.search(cp),
+        ])
+        if not cp_has_acq:
+            return pd.Series({
+                "is_acquiring": False,
+                "acq_reason": "",
+                "acq_score": 0
+            })
 
     return pd.Series({
         "is_acquiring": len(reasons) > 0,
