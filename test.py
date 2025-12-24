@@ -1,93 +1,33 @@
 import pandas as pd
-from collections import Counter
-import re
 
-# -------------------------
-# 1. Load & prep
-# -------------------------
+patterns = good.copy().reset_index(drop=True)
 
-df = pd.read_excel("acquiring_table.xlsx")
+COV_EPS = 0.01  # допустима різниця coverage
 
-df = df.rename(columns={
-    "ОзнАка екв": "is_acq",
-    "PLATPURPOSE": "text"
-})
+# сортуємо: довші + з більшим coverage — першими
+patterns = patterns.sort_values(
+    by=["acq_coverage", "len"],
+    ascending=[False, False]
+).reset_index(drop=True)
 
-df["is_acq"] = (df["is_acq"].str.lower() == "екв")
-df["text"] = df["text"].fillna("").str.lower()
+keep = [True] * len(patterns)
 
-def normalize(s):
-    s = re.sub(r"\s+", " ", s)
-    return s.strip()
+for i in range(len(patterns)):
+    if not keep[i]:
+        continue
 
-df["text"] = df["text"].apply(normalize)
+    pi = patterns.loc[i, "pattern"]
+    ci = patterns.loc[i, "acq_coverage"]
 
-df_acq = df[df["is_acq"]]
-df_non = df[~df["is_acq"]]
+    for j in range(i + 1, len(patterns)):
+        if not keep[j]:
+            continue
 
-# -------------------------
-# 2. Substring extraction
-# -------------------------
+        pj = patterns.loc[j, "pattern"]
+        cj = patterns.loc[j, "acq_coverage"]
 
-def substrings(s, min_len=6, max_len=20):
-    subs = set()
-    L = len(s)
-    for l in range(min_len, max_len + 1):
-        for i in range(0, L - l + 1):
-            subs.add(s[i:i+l])
-    return subs
+        if abs(ci - cj) < COV_EPS and pj in pi:
+            keep[j] = False
 
-# -------------------------
-# 3. Count presence (not frequency)
-# -------------------------
-
-acq_counter = Counter()
-non_counter = Counter()
-
-for text in df_acq["text"]:
-    for sub in substrings(text):
-        acq_counter[sub] += 1
-
-for text in df_non["text"]:
-    for sub in substrings(text):
-        non_counter[sub] += 1
-
-# -------------------------
-# 4. Build stats table
-# -------------------------
-
-records = []
-
-N_acq = len(df_acq)
-N_non = len(df_non)
-
-for sub, cnt_acq in acq_counter.items():
-    cnt_non = non_counter.get(sub, 0)
-
-    coverage = cnt_acq / N_acq
-    leakage = cnt_non / max(1, N_non)
-
-    records.append({
-        "pattern": sub,
-        "len": len(sub),
-        "acq_coverage": coverage,
-        "non_coverage": leakage,
-        "lift": (coverage + 1e-6) / (leakage + 1e-6)
-    })
-
-patterns = pd.DataFrame(records)
-
-# -------------------------
-# 5. Strong patterns
-# -------------------------
-
-good = patterns[
-    (patterns["acq_coverage"] > 0.3) &      # ≥30% еквайрингу
-    (patterns["non_coverage"] < 0.05) &     # майже не поза екв
-    (patterns["len"] <= 25)
-].sort_values(
-    ["acq_coverage", "len"],
-    ascending=[False, True]
-)
-
-good.head(30)
+patterns_merged = patterns[keep].reset_index(drop=True)
+patterns_merged.head(20)
