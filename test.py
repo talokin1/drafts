@@ -1,71 +1,58 @@
-import pandas as pd
-import re
-
-def norm(x):
-    return (x or "").lower()
-
-# ===== VERY BROAD SIGNALS =====
-
-RE_STRONG_TEXT = re.compile(
-    r"(екв|еквайр|acquir|acquiring|liqpay|split\s*id|type\s*acquir)",
+RE_CMPS = re.compile(
+    r"\b(cmps|cmp)\b",
     re.IGNORECASE
 )
 
-RE_CMPS = re.compile(r"\bcmps\b|\bcmp\b", re.IGNORECASE)
-
-RE_CARD_CONTEXT = re.compile(
-    r"(пк|карт|card|visa|mastercard)",
-    re.IGNORECASE
+RE_CMPS_CONTEXT = re.compile(
+    r"""
+    (відшк\w*|екв\b|еквайр\w*|
+     покрит\w*|коміс\w*|ком\.?\s*бан|
+     к-?ть\s*тр|кільк\w*\s*тр|
+     acquir\w*)
+    """,
+    re.IGNORECASE | re.VERBOSE
 )
 
-RE_REFUND = re.compile(
-    r"(відшк|refund|reimb)",
-    re.IGNORECASE
-)
 
-RE_COVERAGE = re.compile(
-    r"(покрит|settlement)",
-    re.IGNORECASE
-)
+if RE_CMPS.search(pp) and RE_CMPS_CONTEXT.search(text):
+    reasons.append("commission")
 
-# ===== DETECTOR =====
 
-def detect_acquiring_phase_a(row):
-    pp = norm(row.get("PLATPURPOSE"))
-    cp = norm(row.get("CONTRAGENTSANAME"))
 
-    text = f"{pp} {cp}"
+def detect_acquiring(row):
+    pp = row.get("PLATPURPOSE", "") or ""
+    cp = row.get("CONTRAGENTSANAME", "") or ""
 
+    text = f"{pp} {cp}".lower()
     reasons = []
 
-    if RE_STRONG_TEXT.search(text):
-        reasons.append("explicit_acquiring")
+    if RE_TYPE_ACQ.search(text):
+        reasons.append("type_acquiring")
 
-    if RE_CMPS.search(pp):
-        reasons.append("cmps_raw")
+    if RE_OPER_ACQ.search(text):
+        reasons.append("operational_acq")
 
     if RE_REFUND.search(text):
-        reasons.append("refund_like")
+        reasons.append("acq_refund")
 
     if RE_COVERAGE.search(text):
-        reasons.append("coverage_like")
+        reasons.append("cards_coverage")
 
-    if RE_CARD_CONTEXT.search(text):
-        reasons.append("card_context")
+    # ✅ cmps only with context
+    if RE_CMPS.search(pp) and RE_CMPS_CONTEXT.search(text):
+        reasons.append("commission")
+
+    if RE_CASH.search(text):
+        reasons.append("cash_epz")
+
+    if RE_INTERNET_ACQ_CP.search(cp):
+        reasons.append("internet_acquiring")
+
+    if RE_COUNTERPARTY.search(cp):
+        reasons.append("counterparty_name")
 
     return pd.Series({
         "is_acquiring": len(reasons) > 0,
         "acq_reason": "|".join(reasons),
         "acq_score": len(reasons)
     })
-
-# ===== RUN =====
-
-df = pd.read_excel("transactions.xlsx")
-
-res = df.apply(detect_acquiring_phase_a, axis=1)
-df = pd.concat([df, res], axis=1)
-
-print("Detected acquiring (phase A):", df["is_acquiring"].mean().round(3))
-
-df.to_excel("transactions_acquiring_phase_a.xlsx", index=False)
