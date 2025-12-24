@@ -1,124 +1,52 @@
+import lightgbm as lgb
+from lightgbm import LGBMRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 import numpy as np
-import pandas as pd
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OrdinalEncoder, FunctionTransformer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-
-# =========================
-# 1. COPY DATA
-# =========================
-df = data.copy()
-
-# =========================
-# 2. TARGET
-# =========================
-TARGET = "MONTHLY_INCOME"
-
-df = df[df[TARGET].notna()]
-y = np.log1p(df[TARGET])
-X = df.drop(columns=[TARGET])
-
-# =========================
-# 3. DROP TECHNICAL IDS
-# =========================
-drop_cols = [
-    "CONTRAGENTID",
-    "IDENTIFYCODE"
-]
-
-X = X.drop(columns=[c for c in drop_cols if c in X.columns])
-
-# =========================
-# 4. COLUMN GROUPS
-# =========================
-categorical_cols = [
-    "SEGMENT",
-    "FIRM_KVED"
-]
-
-ratio_cols = [
-    "PRIMARY_LIABS",
-    "0_LIABS",
-    "0-100K_LIABS",
-    "100K-500K_LIABS",
-    "5M-10M_LIABS",
-    ">10M_LIABS",
-    "10M+_LIABS",
-    "RATIO_OTP_OTH_2025_11"
-]
-
-monetary_cols = [
-    "OTP_AV_LIAB_2025_11",
-    "OTP_TURN_2025_11",
-    "OTH_BANKS_TURN_2025_11",
-    "LOANS_AVG",
-    "LOANS_LIMIT",
-    "ASSETS_SUIT_AMT"
-]
-
-count_cols = [
-    "NB_CARDS_2025_11",
-    "NB_ACCOUNTS_2025_11",
-    "NB_SAVINGS_2025_11",
-    "NB_DEPOSITS_2025_11",
-    "NB_ACCOUNTS_OVER_2",
-    "NB_LOANS_2025_11"
-]
-
-score_cols = [
-    "MSB_SCORE"
-]
-
-# =========================
-# 5. TRANSFORMERS
-# =========================
-log_transformer = FunctionTransformer(
-    func=lambda x: np.log1p(x),
-    feature_names_out="one-to-one"
+lgb_reg = LGBMRegressor(
+    boosting_type="gbdt",
+    objective="regression",
+    n_estimators=3000,
+    learning_rate=0.02,
+    max_depth=30,
+    num_leaves=41,
+    min_child_samples=20,
+    min_child_weight=0.01,
+    subsample=1.0,
+    subsample_freq=0,
+    colsample_bytree=1.0,
+    reg_alpha=0.0,
+    reg_lambda=0.0,
+    random_state=100,
+    n_jobs=-1,
+    importance_type="gain"
 )
 
-cat_transformer = OrdinalEncoder(
-    handle_unknown="use_encoded_value",
-    unknown_value=-1
+lgb_reg.fit(
+    X_train_prep,
+    y_train,
+    eval_set=[(X_valid_prep, y_valid)],
+    eval_metric="rmse",
+    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)]
 )
 
-# =========================
-# 6. COLUMN TRANSFORMER
-# =========================
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("cat", cat_transformer, categorical_cols),
-        ("log_money", log_transformer, monetary_cols),
-        ("ratio", "passthrough", ratio_cols),
-        ("counts", "passthrough", count_cols),
-        ("scores", "passthrough", score_cols),
-    ],
-    remainder="drop",
-    verbose_feature_names_out=False
+
+y_valid_pred_log = lgb_reg.predict(X_valid_prep)
+y_valid_pred = np.expm1(y_valid_pred_log)
+y_valid_true = np.expm1(y_valid)
+rmse = mean_squared_error(y_valid_true, y_valid_pred, squared=False)
+mae = mean_absolute_error(y_valid_true, y_valid_pred)
+
+print(f"RMSE: {rmse:,.2f}")
+print(f"MAE : {mae:,.2f}")
+
+
+feature_importance = (
+    pd.DataFrame({
+        "feature": feature_names,
+        "importance": lgb_reg.feature_importances_
+    })
+    .sort_values("importance", ascending=False)
+    .reset_index(drop=True)
 )
 
-# =========================
-# 7. PIPELINE (READY FOR LGB)
-# =========================
-pipeline = Pipeline(
-    steps=[
-        ("prep", preprocessor)
-    ]
-)
-
-# =========================
-# 8. TRAIN / VALID SPLIT
-# =========================
-X_train, X_valid, y_train, y_valid = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42
-)
-
-X_train_prep = pipeline.fit_transform(X_train)
-X_valid_prep = pipeline.transform(X_valid)
-
-feature_names = pipeline.named_steps["prep"].get_feature_names_out()
