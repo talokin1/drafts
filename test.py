@@ -1,52 +1,93 @@
-import lightgbm as lgb
-from lightgbm import LGBMRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import numpy as np
+import pandas as pd
+from collections import Counter
+import re
 
-lgb_reg = LGBMRegressor(
-    boosting_type="gbdt",
-    objective="regression",
-    n_estimators=3000,
-    learning_rate=0.02,
-    max_depth=30,
-    num_leaves=41,
-    min_child_samples=20,
-    min_child_weight=0.01,
-    subsample=1.0,
-    subsample_freq=0,
-    colsample_bytree=1.0,
-    reg_alpha=0.0,
-    reg_lambda=0.0,
-    random_state=100,
-    n_jobs=-1,
-    importance_type="gain"
-)
+# -------------------------
+# 1. Load & prep
+# -------------------------
 
-lgb_reg.fit(
-    X_train_prep,
-    y_train,
-    eval_set=[(X_valid_prep, y_valid)],
-    eval_metric="rmse",
-    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)]
-)
+df = pd.read_excel("acquiring_table.xlsx")
 
+df = df.rename(columns={
+    "ОзнАка екв": "is_acq",
+    "PLATPURPOSE": "text"
+})
 
-y_valid_pred_log = lgb_reg.predict(X_valid_prep)
-y_valid_pred = np.expm1(y_valid_pred_log)
-y_valid_true = np.expm1(y_valid)
-rmse = mean_squared_error(y_valid_true, y_valid_pred, squared=False)
-mae = mean_absolute_error(y_valid_true, y_valid_pred)
+df["is_acq"] = (df["is_acq"].str.lower() == "екв")
+df["text"] = df["text"].fillna("").str.lower()
 
-print(f"RMSE: {rmse:,.2f}")
-print(f"MAE : {mae:,.2f}")
+def normalize(s):
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
+df["text"] = df["text"].apply(normalize)
 
-feature_importance = (
-    pd.DataFrame({
-        "feature": feature_names,
-        "importance": lgb_reg.feature_importances_
+df_acq = df[df["is_acq"]]
+df_non = df[~df["is_acq"]]
+
+# -------------------------
+# 2. Substring extraction
+# -------------------------
+
+def substrings(s, min_len=6, max_len=20):
+    subs = set()
+    L = len(s)
+    for l in range(min_len, max_len + 1):
+        for i in range(0, L - l + 1):
+            subs.add(s[i:i+l])
+    return subs
+
+# -------------------------
+# 3. Count presence (not frequency)
+# -------------------------
+
+acq_counter = Counter()
+non_counter = Counter()
+
+for text in df_acq["text"]:
+    for sub in substrings(text):
+        acq_counter[sub] += 1
+
+for text in df_non["text"]:
+    for sub in substrings(text):
+        non_counter[sub] += 1
+
+# -------------------------
+# 4. Build stats table
+# -------------------------
+
+records = []
+
+N_acq = len(df_acq)
+N_non = len(df_non)
+
+for sub, cnt_acq in acq_counter.items():
+    cnt_non = non_counter.get(sub, 0)
+
+    coverage = cnt_acq / N_acq
+    leakage = cnt_non / max(1, N_non)
+
+    records.append({
+        "pattern": sub,
+        "len": len(sub),
+        "acq_coverage": coverage,
+        "non_coverage": leakage,
+        "lift": (coverage + 1e-6) / (leakage + 1e-6)
     })
-    .sort_values("importance", ascending=False)
-    .reset_index(drop=True)
+
+patterns = pd.DataFrame(records)
+
+# -------------------------
+# 5. Strong patterns
+# -------------------------
+
+good = patterns[
+    (patterns["acq_coverage"] > 0.3) &      # ≥30% еквайрингу
+    (patterns["non_coverage"] < 0.05) &     # майже не поза екв
+    (patterns["len"] <= 25)
+].sort_values(
+    ["acq_coverage", "len"],
+    ascending=[False, True]
 )
 
+good.head(30)
