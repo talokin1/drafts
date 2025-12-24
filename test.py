@@ -1,19 +1,22 @@
-RE_HOUSEHOLD_NEG = re.compile(
+RE_BANK_CP = re.compile(
     r"""
-    житлово[\-\s]?комунальн |
-    комунальн\w* |
-    рахунок\s+за\s+сплат |
-    оренда |
-    паркомісц |
-    платник\s+[А-ЯІЇЄA-Z][а-яіїєa-z]+ |
-    іпн\s*\d{8,10}
+    ощадбанк |
+    райффайзен |
+    raiffeisen |
+    сенс\s*банк |
+    sense\s*bank |
+    приватбанк |
+    otp\s*bank |
+    укрсиб |
+    пумб |
+    monobank
     """,
     re.IGNORECASE | re.VERBOSE
 )
 
-# === NEGATIVE: household payments via bank (NOT acquiring) ===
-if RE_HOUSEHOLD_NEG.search(pp):
-    # якщо немає явного еквайрингу — відсікаємо
+# === HARD NEGATIVE: household payments via BANK are NOT acquiring ===
+if RE_HOUSEHOLD_NEG.search(pp) and RE_BANK_CP.search(cp):
+    # якщо немає явного acquiring-сигналу — стоп
     if not any([
         RE_OPER_ACQ.search(pp),
         RE_REFUND.search(pp),
