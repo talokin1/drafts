@@ -1,32 +1,26 @@
 RE_BANK_CP = re.compile(
     r"""
-    ощадбанк |
-    райффайзен |
-    raiffeisen |
-    сенс\s*банк |
-    sense\s*bank |
-    приватбанк |
-    otp\s*bank |
-    укрсиб |
-    пумб |
-    monobank
+    \bбанк\b |                      # будь-який "банк"
+    raiffeisen | райффайзен | райф | # Райффайзен
+    ощад | oschad |                 # Ощад
+    сенс | sense |                  # Sense
+    приват | privat |               # Приват
+    укрсиб | ukrsib |               # Укрсиб
+    укргаз | ukrgas |               # Укргаз
+    пумб | pumb |                   # PUMB
+    mono | monobank |               # mono
+    otp\b | otp\s*bank              # OTP
     """,
     re.IGNORECASE | re.VERBOSE
 )
 
-# === HARD NEGATIVE: household payments via BANK are NOT acquiring ===
+# HARD STOP: household payments to BANK are NOT acquiring
 if RE_HOUSEHOLD_NEG.search(pp) and RE_BANK_CP.search(cp):
-    # якщо немає явного acquiring-сигналу — стоп
+    # виняток: якщо є явний acquiring-сигнал у cp/pp (liqpay/type acquiring/екв)
     if not any([
-        RE_OPER_ACQ.search(pp),
-        RE_REFUND.search(pp),
-        RE_COVERAGE.search(pp),
-        RE_TYPE_ACQ.search(pp),
+        RE_TYPE_ACQ.search(pp) or RE_TYPE_ACQ.search(cp),
         RE_INTERNET_ACQ_CP.search(cp),
-        RE_COUNTERPARTY.search(cp),
+        re.search(r"\bекв\b|еквайр|acquir|liqpay|split\s*id|type\s*acquir", cp, re.IGNORECASE),
+        re.search(r"\bекв\b|еквайр|acquir|liqpay|split\s*id|type\s*acquir", pp, re.IGNORECASE),
     ]):
-        return pd.Series({
-            "is_acquiring": False,
-            "acq_reason": "",
-            "acq_score": 0
-        })
+        return pd.Series({"is_acquiring": False, "acq_reason": "", "acq_score": 0})
