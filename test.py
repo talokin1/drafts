@@ -1,3 +1,9 @@
+
+RE_INSTALLMENTS = re.compile(
+    r"(оплата\s*частинами|покупк\w*\s*частинами|split\s*pay)",
+    re.IGNORECASE
+)
+
 RE_CASH_REFUND = re.compile(
     r"""
     (відшкод|повернен|reversal|refund)
