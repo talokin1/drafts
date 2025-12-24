@@ -1,33 +1,93 @@
-import pandas as pd
+RE_COMMISSION = re.compile(
+    r"(cmps|cmp|коміс|ком\.?|komis|commission).*?(\d+[.,]?\d*)",
+    re.IGNORECASE
+)
 
-patterns = good.copy().reset_index(drop=True)
+RE_CASH = re.compile(
+    r"видач\w*.*?(готів|гот\.?).*?(епз|карт)",
+    re.IGNORECASE
+)
 
-COV_EPS = 0.01  # допустима різниця coverage
+RE_COVERAGE = re.compile(
+    r"покрит\w*.*?(пк|карт|card)",
+    re.IGNORECASE
+)
 
-# сортуємо: довші + з більшим coverage — першими
-patterns = patterns.sort_values(
-    by=["acq_coverage", "len"],
-    ascending=[False, False]
-).reset_index(drop=True)
+RE_OPER_ACQ = re.compile(
+    r"(опер\.?|операц|торг\.?|торгів).*?екв",
+    re.IGNORECASE
+)
 
-keep = [True] * len(patterns)
+RE_REFUND = re.compile(
+    r"відшк\w*.*?екв",
+    re.IGNORECASE
+)
 
-for i in range(len(patterns)):
-    if not keep[i]:
-        continue
+RE_TYPE_ACQ = re.compile(
+    r"type\s*acquir|liqpay|split\s+id",
+    re.IGNORECASE
+)
 
-    pi = patterns.loc[i, "pattern"]
-    ci = patterns.loc[i, "acq_coverage"]
+RE_COUNTERPARTY = re.compile(
+    r"еквайр|acquir|liqpay",
+    re.IGNORECASE
+)
 
-    for j in range(i + 1, len(patterns)):
-        if not keep[j]:
-            continue
 
-        pj = patterns.loc[j, "pattern"]
-        cj = patterns.loc[j, "acq_coverage"]
 
-        if abs(ci - cj) < COV_EPS and pj in pi:
-            keep[j] = False
+def detect_acquiring(row):
+    text = f"{row.get('PLATPURPOSE', '')} {row.get('CONTRAGENTSANAME', '')}".lower()
 
-patterns_merged = patterns[keep].reset_index(drop=True)
-patterns_merged.head(20)
+    reasons = []
+
+    if RE_TYPE_ACQ.search(text):
+        reasons.append("type_acquiring")
+    if RE_OPER_ACQ.search(text):
+        reasons.append("operational_acq")
+    if RE_REFUND.search(text):
+        reasons.append("acq_refund")
+    if RE_COVERAGE.search(text):
+        reasons.append("cards_coverage")
+    if RE_COMMISSION.search(text):
+        reasons.append("commission")
+    if RE_CASH.search(text):
+        reasons.append("cash_epz")
+    if RE_COUNTERPARTY.search(text):
+        reasons.append("counterparty_name")
+
+    return pd.Series({
+        "is_acquiring": len(reasons) > 0,
+        "acq_reason": "|".join(reasons),
+        "acq_score": len(reasons)
+    })
+
+
+# === LOAD DATA ===
+df = pd.read_excel("transactions.xlsx")  
+# обовʼязково мають бути колонки:
+# PLATPURPOSE, CONTRAGENTSANAME
+
+# === APPLY DETECTOR ===
+detected = df.apply(detect_acquiring, axis=1)
+
+df = pd.concat([df, detected], axis=1)
+
+
+# Загальна статистика
+print("Знайдено еквайрингу:", df["is_acquiring"].sum())
+print("Відсоток:", round(df["is_acquiring"].mean() * 100, 2), "%")
+
+# По причинах
+print("\nBreakdown по правилах:")
+print(
+    df[df["is_acquiring"]]
+    .groupby("acq_reason")
+    .size()
+    .sort_values(ascending=False)
+)
+
+
+df.to_excel(
+    "transactions_with_acquiring_flag.xlsx",
+    index=False
+)
