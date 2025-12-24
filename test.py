@@ -1,26 +1,27 @@
-RE_COUNTERPARTY_IS_BANK = re.compile(
-    r"\bбанк\b|bank\b|АТ\s*\".*банк\"|АО\s*\".*банк\"|JSC\s+.*bank",
-    re.IGNORECASE
+RE_BANK_CP = re.compile(
+    r"""
+    \bбанк\b |                      # будь-який "банк"
+    raiffeisen | райффайзен | райф | # Райффайзен
+    ощад | oschad |                 # Ощад
+    сенс | sense |                  # Sense
+    приват | privat |               # Приват
+    укрсиб | ukrsib |               # Укрсиб
+    укргаз | ukrgas |               # Укргаз
+    пумб | pumb |                   # PUMB
+    mono | monobank |               # mono
+    otp\b | otp\s*bank              # OTP
+    """,
+    re.IGNORECASE | re.VERBOSE
 )
 
-# optionally: explicit known bank names (extend as needed)
-BANK_NAME_BLACKLIST = {
-    "сенс банк", "sense bank", "приватбанк", "ощадбанк", "укрсиббанк", "райффайзен",
-    "пумб", "monobank", "укргазбанк", "otp bank"
-}
 
-
-def looks_like_bank_name(s: str) -> bool:
-    if not s:
-        return False
-    t = s.lower()
-    if RE_COUNTERPARTY_IS_BANK.search(t):
-        return True
-    return any(b in t for b in BANK_NAME_BLACKLIST)
-
-
-
-is_bank = looks_like_bank_name(cp)
-
-if reasons == ["counterparty_weak"] and is_bank:
-    return pd.Series({"is_acquiring": False, "acq_reason": "", "acq_score": 0})
+# HARD STOP: household payments to BANK are NOT acquiring
+if RE_HOUSEHOLD_NEG.search(pp) and RE_BANK_CP.search(cp):
+    # виняток: якщо є явний acquiring-сигнал у cp/pp (liqpay/type acquiring/екв)
+    if not any([
+        RE_TYPE_ACQ.search(pp) or RE_TYPE_ACQ.search(cp),
+        RE_INTERNET_ACQ_CP.search(cp),
+        re.search(r"\bекв\b|еквайр|acquir|liqpay|split\s*id|type\s*acquir", cp, re.IGNORECASE),
+        re.search(r"\bекв\b|еквайр|acquir|liqpay|split\s*id|type\s*acquir", pp, re.IGNORECASE),
+    ]):
+        return pd.Series({"is_acquiring": False, "acq_reason": "", "acq_score": 0})
