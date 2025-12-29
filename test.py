@@ -1,3 +1,7 @@
+y_train_bin = (y_train > 0).astype(int)
+y_valid_bin = (y_valid > 0).astype(int)
+
+
 from lightgbm import LGBMClassifier
 import lightgbm as lgb
 lgb_clf = LGBMClassifier(
