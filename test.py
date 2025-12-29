@@ -1,45 +1,30 @@
-artifact = {
-    # ---------- Primary ----------
-    "primary": {
-        "model": lgc_primary,
-        "features": features_primary,
-        "threshold": 0.5
-    },
+import pandas as pd
+import numpy as np
+import re
 
-    "income_bins": {
-        "model": multiclass_model,
-        "features": features_multiclass,
-        "label_encoder": label_encoder,
-        "bin_edges": bin_edges,
-        "bin_labels": bin_labels
-    }
-}
+def normalize_kved(val):
+    if pd.isna(val):
+        return np.nan
 
-import pickle
+    s = str(val).strip()
 
-with open("corp_liabilities_pipeline.pkl", "wb") as f:
-    pickle.dump(artifact, f)
+    # 1. заміна коми на крапку
+    s = s.replace(',', '.')
 
+    # 2. залишаємо тільки цифри і одну крапку
+    s = re.sub(r'[^0-9.]', '', s)
 
+    if '.' not in s:
+        # якщо раптом без підкласу → вважаємо .00
+        return f"{int(s)}.00"
 
+    main, sub = s.split('.', 1)
 
+    # 3. прибираємо leading zeros
+    main = str(int(main)) if main else "0"
 
-with open("corp_liabilities_pipeline.pkl", "rb") as f:
-    artifact = pickle.load(f)
-X_primary = main_dataset[artifact["primary"]["features"]]
+    # 4. підклас → рівно 2 цифри
+    sub = sub[:2].ljust(2, '0')
 
-main_dataset["PRIMARY_SCORE"] = (
-    artifact["primary"]["model"]
-    .predict_proba(X_primary)[:, 1]
-)
-
-X_bins = main_dataset[artifact["income_bins"]["features"]]
-
-proba_bins = artifact["income_bins"]["model"].predict_proba(X_bins)
-
-bins_df = pd.DataFrame(
-    proba_bins,
-    columns=artifact["income_bins"]["label_encoder"].classes_
-)
-
-main_dataset = pd.concat([main_dataset, bins_df], axis=1)
+    return f"{main}.{sub}"
+temp["FIRM_KVED"] = temp["FIRM_KVED"].apply(normalize_kved)
