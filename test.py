@@ -1,73 +1,82 @@
+STAGE1_THRESHOLD = 0.5
+
+train_mask = y_train_bin == 1
+valid_mask = y_valid_bin == 1
+
+X2_train = X_train_proc.loc[train_mask]
+y2_train = y_train.loc[train_mask]
+
+X2_valid = X_valid_proc.loc[valid_mask]
+y2_valid = y_valid.loc[valid_mask]
+
+print("Stage 2 train shape:", X2_train.shape)
+print("Stage 2 valid shape:", X2_valid.shape)
+
+
 import lightgbm as lgb
-from lightgbm import LGBMClassifier
+from lightgbm import LGBMRegressor
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
 
-import numpy as np
-import pandas as pd
-
-from sklearn.metrics import (
-    f1_score,
-    precision_score,
-    recall_score
-)
-
-
-lgb_stage1 = LGBMClassifier(
+lgb_stage2 = LGBMRegressor(
     boosting_type="gbdt",
-    objective="binary",
-    class_weight="balanced",
-
-    learning_rate=0.02,
+    objective="regression",
+    learning_rate=0.03,
     n_estimators=3000,
-    num_leaves=41,
+    num_leaves=63,
     max_depth=30,
-
-    min_child_samples=50,    
-    min_child_weight=1.0,
-    min_split_gain=0.0,
-
-    subsample=0.8,
-    colsample_bytree=0.8,
-
+    min_child_samples=30,
+    subsample=0.9,
+    colsample_bytree=0.9,
     random_state=100,
     n_jobs=-1,
     importance_type="gain"
 )
-lgb_stage1.fit(
-    X_train_proc,
-    y_train_bin,
-    eval_set=[(X_valid_proc, y_valid_bin)],
-    eval_metric="auc",
-    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)]
+
+lgb_stage2.fit(
+    X2_train,
+    y2_train,
+    eval_set=[(X2_valid, y2_valid)],
+    eval_metric="mae",
+    callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True)]
 )
 
+train_pred_2 = lgb_stage2.predict(X2_train)
+valid_pred_2 = lgb_stage2.predict(X2_valid)
 
-p_train = lgb_stage1.predict_proba(X_train_proc)[:, 1]
-y_train_pred = (p_train >= 0.5).astype(int)
+print("STAGE 2 – TRAIN METRICS")
+print("MAE :", round(mean_absolute_error(y2_train, train_pred_2), 2))
+print("RMSE:", round(root_mean_squared_error(y2_train, train_pred_2), 2))
+print("R2  :", round(r2_score(y2_train, train_pred_2), 4))
 
-print("STAGE 1 — TRAIN METRICS")
-print("F1:", round(f1_score(y_train_bin, y_train_pred), 4))
-print("Precision:", round(precision_score(y_train_bin, y_train_pred), 4))
-print("Recall:", round(recall_score(y_train_bin, y_train_pred), 4))
-
-
-
-
-p_valid = lgb_stage1.predict_proba(X_valid_proc)[:, 1]
-y_valid_pred = (p_valid >= 0.5).astype(int)
-
-print("\nSTAGE 1 — VALID METRICS")
-print("F1:", round(f1_score(y_valid_bin, y_valid_pred), 4))
-print("AUC:", round(roc_auc_score(y_valid_bin, p_valid), 4))
-print("Precision:", round(precision_score(y_valid_bin, y_valid_pred), 4))
-print("Recall:", round(recall_score(y_valid_bin, y_valid_pred), 4))
-print("Confusion matrix:\n", confusion_matrix(y_valid_bin, y_valid_pred))
+print("\nSTAGE 2 – VALID METRICS")
+print("MAE :", round(mean_absolute_error(y2_valid, valid_pred_2), 2))
+print("RMSE:", round(root_mean_squared_error(y2_valid, valid_pred_2), 2))
+print("R2  :", round(r2_score(y2_valid, valid_pred_2), 4))
 
 
+feat_imp_stage2 = (
+    pd.DataFrame({
+        "feature": X2_train.columns,
+        "importance": lgb_stage2.feature_importances_
+    })
+    .sort_values("importance", ascending=False)
+    .reset_index(drop=True)
+)
 
-thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+feat_imp_stage2.head(20)
 
-print("\nSTAGE 1 — VALID F1 BY THRESHOLD")
-for t in thresholds:
-    y_pred_t = (p_valid >= t).astype(int)
-    f1 = f1_score(y_valid_bin, y_pred_t)
-    print(f"Threshold {t}: F1 = {f1:.4f}")
+
+
+
+# Stage 1 probabilities
+p_stage1_valid = lgb_stage1.predict_proba(X_valid_proc)[:, 1]
+
+final_pred_valid = np.zeros(len(X_valid_proc))
+
+mask = p_stage1_valid >= STAGE1_THRESHOLD
+final_pred_valid[mask] = lgb_stage2.predict(X_valid_proc.loc[mask])
+
+print("FINAL VALID METRICS (FULL POPULATION)")
+print("MAE :", round(mean_absolute_error(y_valid, final_pred_valid), 2))
+print("RMSE:", round(root_mean_squared_error(y_valid, final_pred_valid), 2))
+print("R2  :", round(r2_score(y_valid, final_pred_valid), 4))
