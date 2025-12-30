@@ -1,71 +1,128 @@
-target_like = [c for c in X_train_proc.columns if "income" in c.lower()]
-target_like[:50]
+y_train_bin = (y_train > 0).astype(int)
+y_valid_bin = (y_valid > 0).astype(int)
 
 
-bad = set(X_train_proc.columns) & set(y_train.to_frame().columns)
-print("Overlap X vs y:", bad)
-
-
-
-import numpy as np
-import pandas as pd
-
-num_cols = X_train_proc.select_dtypes(include=[np.number]).columns
-corr_bin = X_train_proc[num_cols].corrwith(y_train_bin, method="spearman").sort_values(ascending=False)
-
-corr_bin.head(30), corr_bin.tail(30)
-
-
-
-top_feat = corr_bin.abs().idxmax()
-print("Top feature:", top_feat, "corr:", corr_bin[top_feat])
-
-display(X_train_proc.groupby(y_train_bin)[top_feat].describe())
-
-
-
-
-from sklearn.metrics import f1_score, roc_auc_score
-
-p_valid = lgb_stage1.predict_proba(X_valid_proc)[:, 1]
-pred_valid = (p_valid >= 0.5).astype(int)
-
-print("STAGE1 VALID F1:", round(f1_score(y_valid_bin, pred_valid), 4))
-print("STAGE1 VALID AUC:", round(roc_auc_score(y_valid_bin, p_valid), 4))
-
-
-
-from lightgbm import LGBMClassifier
 import lightgbm as lgb
+from lightgbm import LGBMClassifier
+from sklearn.metrics import f1_score
 
 lgb_stage1 = LGBMClassifier(
-    boosting_type="gbdt",
-    objective="binary",
-    class_weight="balanced",
-    learning_rate=0.03,
+    boosting_type='gbdt',
+    objective='binary',
+    class_weight='balanced',
+    learning_rate=0.02,
+    max_depth=30,
+    min_child_samples=20,
+    min_child_weight=0.01,
+    min_split_gain=0.0,
+    num_leaves=41,
     n_estimators=3000,
-
-    # СИЛЬНЕ спрощення
-    max_depth=6,
-    num_leaves=31,
-    min_child_samples=200,
-
-    # Регуляризація
-    reg_alpha=1.0,
-    reg_lambda=5.0,
-
-    # Рандомізація
-    subsample=0.8,
-    colsample_bytree=0.8,
-    subsample_freq=1,
-
+    subsample=1.0,
+    colsample_bytree=1.0,
+    subsample_for_bin=200000,
+    subsample_freq=0,
     random_state=100,
-    n_jobs=-1
+    n_jobs=-1,
+    importance_type='gain',
+    verbose=1
 )
+
 
 lgb_stage1.fit(
-    X_train_proc, y_train_bin,
+    X_train_proc,
+    y_train_bin,
     eval_set=[(X_valid_proc, y_valid_bin)],
-    eval_metric="auc",
-    callbacks=[lgb.early_stopping(100, verbose=True)]
+    eval_metric='f1',
+    callbacks=[lgb.early_stopping(stopping_rounds=50)]
 )
+
+features_stage1 = X_train_proc.columns
+importances_stage1 = lgb_stage1.feature_importances_
+
+feature_importance_stage1 = (
+    pd.DataFrame({
+        'importance': importances_stage1,
+        'features': features_stage1
+    })
+    .sort_values('importance', ascending=False)
+    .reset_index(drop=True)
+)
+
+
+
+
+
+forecast_train_stage1 = pd.DataFrame(
+    lgb_stage1.predict_proba(X_train_proc),
+    columns=['ZERO_INCOME', 'NON_ZERO']
+)
+
+forecast_train_stage1 = forecast_train_stage1[['NON_ZERO']]
+
+X_train_stage1_total = pd.concat(
+    [
+        X_train.reset_index(drop=True),
+        y_train.reset_index(drop=True),
+        forecast_train_stage1.reset_index(drop=True)
+    ],
+    axis=1
+)
+
+
+
+
+forecast_valid_stage1 = pd.DataFrame(
+    lgb_stage1.predict_proba(X_valid_proc),
+    columns=['ZERO_INCOME', 'NON_ZERO']
+)
+
+forecast_valid_stage1 = forecast_valid_stage1[['NON_ZERO']]
+
+X_valid_stage1_total = pd.concat(
+    [
+        X_valid.reset_index(drop=True),
+        y_valid.reset_index(drop=True),
+        forecast_valid_stage1.reset_index(drop=True)
+    ],
+    axis=1
+)
+
+mask_pos_train = y_train > 0
+
+X_train_pos = X_train_proc[mask_pos_train]
+y_train_pos = y_train[mask_pos_train]
+
+
+from lightgbm import LGBMRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+lgb_stage2 = LGBMRegressor(
+    boosting_type='gbdt',
+    objective='regression',
+    learning_rate=0.02,
+    max_depth=30,
+    min_child_samples=20,
+    min_child_weight=0.01,
+    min_split_gain=0.0,
+    num_leaves=41,
+    n_estimators=3000,
+    subsample=1.0,
+    colsample_bytree=1.0,
+    random_state=100,
+    n_jobs=-1,
+    importance_type='gain'
+)
+
+
+lgb_stage2.fit(
+    X_train_pos,
+    y_train_pos,
+    eval_set=[(X_valid_proc[y_valid > 0], y_valid[y_valid > 0])],
+    eval_metric='mae',
+    callbacks=[lgb.early_stopping(stopping_rounds=50)]
+)
+
+p_nonzero_valid = lgb_stage1.predict_proba(X_valid_proc)[:, 1]
+y_pos_pred_valid = lgb_stage2.predict(X_valid_proc)
+
+y_valid_two_stage = p_nonzero_valid * y_pos_pred_valid
