@@ -1,31 +1,46 @@
-clients_ids = clients["CONTRAGENTID"].astype(int).tolist()
 
-dates_sql = [
-    f"date '{pd.to_datetime(d, dayfirst=True).date()}'"
-    for d in dates
-]
-
-
-QUERY = f"""
-select
-    contragentid,
-    arcdate,
-    max(balance_amt_uah) as max_balance_amt_uah
-from b2_olap.ar_deals@dwh
-where contragentid in ({','.join(map(str, clients_ids))})
-  and arcdate in ({','.join(dates_sql)})
-group by contragentid, arcdate
-"""
-
-df = get_data(QUERY)
-result = (
-    df
-    .pivot(
-        index="CONTRAGENTID",
-        columns="ARCDATE",
-        values="MAX_BALANCE_AMT_UAH"
-    )
-    .fillna(0)
-    .sort_index()
+data["Дата проведення"] = pd.to_datetime(
+    data["Дата проведення"],
+    dayfirst=True
 )
-result.columns = result.columns.strftime("%d.%m.%Y")
+data = data.sort_values("Дата проведення")
+
+
+
+
+results = []
+
+for arcdate, group in data.groupby("Дата проведення"):
+    ids = group["Ідентифікатор заявки в АБС"].dropna().unique()
+
+    if len(ids) == 0:
+        continue
+
+
+    ids_str = ",".join(str(int(x)) for x in ids)
+
+    sql = f"""
+    SELECT
+        arcdate,
+        id,
+        bankaID,
+        bankbID
+    FROM b2_olap.ar_document@dwh
+    WHERE arcdate = TO_DATE('{arcdate.strftime("%d.%m.%Y")}', 'DD.MM.YYYY')
+      AND id IN ({ids_str})
+    """
+
+    df_part = get_data(sql)
+    results.append(df_part)
+
+    print(f"{arcdate.date()} → {len(ids)} IDs")
+
+bank_df = pd.concat(results, ignore_index=True)
+
+
+data = data.merge(
+    bank_df,
+    left_on=["Дата проведення", "Ідентифікатор заявки в АБС"],
+    right_on=["arcdate", "id"],
+    how="left"
+)
