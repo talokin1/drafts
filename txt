@@ -1,34 +1,40 @@
-Ключове обмеження поточного набору даних:
+Acquiring
+Business context
 
-відсутні контактні дані фізичних осіб-бенефіціарів
-(адреси, телефони)
+Several working sessions were conducted with Andriy Kredensel (Acquiring business owner) to align the search logic with real acquiring flows and accounting practice.
 
-Поточні задачі:
+Change in client search strategy
 
-повна інтеграція даних у моделі та регулярні датасети
+We shifted from a text-only approach to a transaction-structure–driven approach, focusing on core acquiring settlements:
 
-пошук альтернативних джерел контактної інформації
+2924 → 2600
 
-інфраструктурне закріплення досягнутого результату
+2924 → 2650
 
+2924 → 2655
 
+This allowed us to isolate transactions that are natively linked to acquiring operations.
 
+Additional signals
 
-Для подальшого розвитку проєкту необхідно:
+Acquiring indicators are now identified not only in payment purpose, but also in:
 
-залити поточний датасет у Azure Data Lake
+counterparty accounts
 
-Це дозволить:
+counterparty names (e.g. “Internet acquiring”)
 
-уникнути втрати напрацьованих даних
+Result
 
-масштабувати використання між командами
+November analysis:
 
-повторно використовувати дані в нових ML-проєктах
+1,069 potential acquiring clients (new methodology)
 
-зменшити дублювання робіт
+294 clients (previous approach)
 
-Фінальний меседж (ВИДІЛИТИ):
+→ ~3.6× increase driven by more accurate business logic.
 
-Проєкт уже довів свою бізнес-цінність.
-Data Lake — необхідний крок до системності та масштабування.
+Next steps
+
+Extend the analysis from a single month to full-year transaction history
+
+Validate client stability and recurring acquiring behavior
