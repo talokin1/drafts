@@ -1,40 +1,55 @@
-Acquiring
-Business context
+Project Objective
 
-Several working sessions were conducted with Andriy Kredensel (Acquiring business owner) to align the search logic with real acquiring flows and accounting practice.
+Forecast expected monthly profit of a corporate client by income streams
+before client acquisition, based on financial statements and internal benchmarks.
 
-Change in client search strategy
+Why it matters
 
-We shifted from a text-only approach to a transaction-structure–driven approach, focusing on core acquiring settlements:
+Smarter RM prioritization
+Focus on clients with clear revenue drivers, not just “big companies”
 
-2924 → 2600
+Higher expected revenue per acquired client
+Target products with the highest monetization potential
 
-2924 → 2650
+Transparent economics
+Understand where exactly the profit will come from (assets / liabilities / fees)
 
-2924 → 2655
+How it works
 
-This allowed us to isolate transactions that are natively linked to acquiring operations.
+(visual block / icons recommended)
 
-Additional signals
+🧾 Financial statements
+→ assets, liabilities, cash, turnover, structure
 
-Acquiring indicators are now identified not only in payment purpose, but also in:
+🏦 Internal OTP benchmarks
+→ historical income by product type
 
-counterparty accounts
+🧠 ML models by income stream
 
-counterparty names (e.g. “Internet acquiring”)
+Assets income
+(loans, overdrafts, leasing, working capital)
 
-Result
+Liabilities income
+(current accounts, term deposits)
 
-November analysis:
+Commissions
+(payments, FX, guarantees, cards, cash services)
 
-1,069 potential acquiring clients (new methodology)
+➡️ Output
 
-294 clients (previous approach)
+Expected monthly income by each stream
 
-→ ~3.6× increase driven by more accurate business logic.
+Total potential profit = sum of streams
 
-Next steps
+Client classified into profitability buckets
 
-Extend the analysis from a single month to full-year transaction history
+Business result
 
-Validate client stability and recurring acquiring behavior
+Clear answer to:
+“How much will we earn from this client — and from which products?”
+
+Supports:
+
+RM call prioritization
+
+Product-focused sales strategy
