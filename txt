@@ -1,55 +1,18 @@
-Project Objective
+За останні роки банк системно рухається в напрямку монетизації зовнішніх даних та аналітики по external-клієнтах (не клієнтах OTP).
 
-Forecast expected monthly profit of a corporate client by income streams
-before client acquisition, based on financial statements and internal benchmarks.
+Ключовий приклад:
 
-Why it matters
+Corp External Liabilities
 
-Smarter RM prioritization
-Focus on clients with clear revenue drivers, not just “big companies”
+За 9 місяців ≈  доходу
 
-Higher expected revenue per acquired client
-Target products with the highest monetization potential
+Це доводить, що:
 
-Transparent economics
-Understand where exactly the profit will come from (assets / liabilities / fees)
+зовнішні дані напряму конвертуються в дохід
 
-How it works
+банк може ефективно працювати з non-OTP клієнтами
 
-(visual block / icons recommended)
+інвестиції в external-data продукти мають ROI
 
-🧾 Financial statements
-→ assets, liabilities, cash, turnover, structure
-
-🏦 Internal OTP benchmarks
-→ historical income by product type
-
-🧠 ML models by income stream
-
-Assets income
-(loans, overdrafts, leasing, working capital)
-
-Liabilities income
-(current accounts, term deposits)
-
-Commissions
-(payments, FX, guarantees, cards, cash services)
-
-➡️ Output
-
-Expected monthly income by each stream
-
-Total potential profit = sum of streams
-
-Client classified into profitability buckets
-
-Business result
-
-Clear answer to:
-“How much will we earn from this client — and from which products?”
-
-Supports:
-
-RM call prioritization
-
-Product-focused sales strategy
+Висновок:
+External data — це не експеримент, а прибуткова бізнес-лінійка.
