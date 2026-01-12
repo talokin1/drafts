@@ -1,29 +1,36 @@
-is_refund_cash = RE_REFUND_CASH_STRICT.search(full_text)
-is_refund_acq  = RE_REFUND_ACQ.search(full_text)
+RE_REFUND_STRONG = re.compile(
+    r"""
+    \b(
+        відшк\w*        |  # відшкод, відшкодування
+        поверн\w*       |  # повернення
+        рефанд\w*       |  # рефанд
+        refund          |
+        reversal        |
+        reversal\s+of
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE
+)
 
 
-if is_refund_cash:
-    return {
-        "is_acquiring": True,
-        "reason": "refund_cash_acquiring",
-        "score": 3
-    }
+if RE_REFUND_STRONG.search(pp_text):
+    # acquiring-refund тільки якщо є хоча б один acquiring-якір
+    anchors = 0
 
-if is_refund_acq:
-    return {
-        "is_acquiring": True,
-        "reason": "refund_acquiring",
-        "score": 2
-    }
+    if RE_COMMISSION.search(pp_text):
+        anchors += 1
+    if RE_COUNTERPARTY.search(cp_text):
+        anchors += 1
+    if RE_INTERNET_ACQ_CP.search(cp_text):
+        anchors += 1
+    if RE_CMPS_MERCHANT.search(pp_text):
+        anchors += 1
+    if RE_ADDRESS_HINT.search(pp_text):
+        anchors += 1
 
-
-
-if (
-    RE_OPERATIONAL_REFUND.search(full_text)
-    and not (is_refund_cash or is_refund_acq)
-):
-    return {
-        "is_acquiring": False,
-        "reason": "operational_refund",
-        "score": 0
-    }
+    if anchors > 0:
+        return pd.Series({
+            "is_acquiring": True,
+            "acq_reason": "acq_refund",
+            "acq_score": 2 + anchors,  # підсилюємо, але не максимум
+        })
