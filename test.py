@@ -1,34 +1,20 @@
-opf_ref = (
-    opf_df[["FIRM_OPFCD", "FIRM_OPFNM"]]
-    .dropna()
-    .drop_duplicates()
-    .rename(columns={
-        "FIRM_OPFCD": "OPF_CODE",
-        "FIRM_OPFNM": "OPF_NAME"
-    })
-)
+month_map = {
+    "Січень": "01", "Лютий": "02", "Березень": "03", "Квітень": "04",
+    "Травень": "05", "Червень": "06", "Липень": "07", "Серпень": "08",
+    "Вересень": "09", "Жовтень": "10", "Листопад": "11", "Грудень": "12"
+}
 
-opf_ref["OPF_NAME_NORM"] = (
-    opf_ref["OPF_NAME"]
-    .str.lower()
-    .str.replace(r"\s+", " ", regex=True)
-    .str.strip()
-)
+tmp = df["Дата дзвінка"].str.split(", ", expand=True)
 
-df["FULL_NAME_NORM"] = (
-    df["Повна назва"]
-    .astype(str)
-    .str.lower()
-    .str.replace("[«»\"']", "", regex=True)
-    .str.replace(r"\s+", " ", regex=True)
-    .str.strip()
-)
+df["month_name"] = tmp[0]
+df["year"] = tmp[1]
+df["month_num"] = df["month_name"].map(month_map)
 
-def extract_opf(full_name_norm, opf_ref):
-    for _, r in opf_ref.iterrows():
-        if full_name_norm.startswith(r["OPF_NAME_NORM"]):
-            return r["OPF_CODE"], r["OPF_NAME"]
-    return None, None
-df[["OPF_CODE", "OPF_NAME"]] = df["FULL_NAME_NORM"].apply(
-    lambda x: pd.Series(extract_opf(x, opf_ref))
-)
+df["year_month"] = df["year"] + "_" + df["month_num"]
+
+for ym, g in df.groupby("year_month"):
+    filename = f"NPS_{ym}.parquet"
+    g.to_parquet(filename, index=False)
+    print(f"Saved {filename} | Rows = {len(g)}")
+
+df.groupby("year_month").size().sum() == len(df)
