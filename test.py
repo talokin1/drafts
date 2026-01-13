@@ -1,44 +1,35 @@
-df_acq = df_batch[df_batch["is_acquiring"]].copy()
-
-if df_acq.empty:
-    print("No acquiring in batch")
-
-
-agg_batch = (
-    df_acq
-    .groupby("CONTRAGENTBIDENTIFYCODE")
-    .agg(
-        SUMMAEQ=("SUMMAEQ", "sum"),
-        NUM_TRX=("SUMMAEQ", "size"),
-        PLATPURPOSE=("PLATPURPOSE", lambda x: x.dropna().iloc[0] if len(x.dropna()) else ""),
-        CONTRAGENTASNAME=("CONTRAGENTASNAME", lambda x: x.dropna().iloc[0] if len(x.dropna()) else ""),
-    )
-    .reset_index()
-    .rename(columns={"CONTRAGENTBIDENTIFYCODE": "IDENTIFYCODE"})
+RE_UTILITIES = re.compile(
+    r"""
+    \b(
+        комун|
+        житлово[\s\-]?комунальн|
+        ком\.?\s*послуг|
+        електро|
+        ел\.?\s*енерг|
+        тепл(о|ов)|
+        газ|
+        вод(а|о)|
+        оренд|
+        паркомісц|
+        відшк|
+        рахунк|
+        акт
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE
 )
 
-agg_batch["IDENTIFYCODE"] = agg_batch["IDENTIFYCODE"].astype(str)
-agg_batch["MONTH"] = "2025-11"
+
+def detect_acquiring(row: pd.Series) -> pd.Series:
+    pp_text = normalize_ua((row.get("PLATPURPOSE") or "").lower())
+    cp_text = normalize_ua((row.get("CONTRAGENTASNAME") or "").lower())
+    full_text = f"{pp_text} {cp_text}"
+
+    if RE_UTILITIES.search(full_text):
+        return pd.Series({
+            "is_acquiring": False,
+            "acq_reason": "utility_payment",
+            "acq_score": 0,
+        })
 
 
-all_batches = pd.concat(
-    pd.read_parquet(f)
-    for f in Path("C:/Projects/(DS-398) Acquiring/all_corr_2025_11").glob("acq_2025-11-*.parquet")
-)
-
-df_acq = all_batches[all_batches["is_acquiring"]]
-
-final_agg = (
-    df_acq
-    .groupby("CONTRAGENTBIDENTIFYCODE")
-    .agg(
-        SUMMAEQ=("SUMMAEQ", "sum"),
-        NUM_TRX=("SUMMAEQ", "size"),
-        PLATPURPOSE=("PLATPURPOSE", lambda x: x.dropna().iloc[0] if len(x.dropna()) else ""),
-        CONTRAGENTASNAME=("CONTRAGENTASNAME", lambda x: x.dropna().iloc[0] if len(x.dropna()) else ""),
-    )
-    .reset_index()
-    .rename(columns={"CONTRAGENTBIDENTIFYCODE": "IDENTIFYCODE"})
-)
-
-final_agg["MONTH"] = "2025-11"
