@@ -1,3 +1,4 @@
-\b(розр(ах(ун(ки|ків)?)?)?\.?|r/р)\s*за\s*(плат(іжн(ими|их)?)?\.?\s*)?(карт(ами|ками|к\.?)|пк)\b
-if RE_ACQ_SETTLEMENT.search(text):
-    return True   # 100% acquiring, не дивимось більше ні на що
+\bтранзит\w*\b.*\b(mpos|pos)\b|\b(mpos|pos)\b.*\bтранзит\w*\b
+if RE_ACQ_TRANSIT.search(text):
+    return True
+
