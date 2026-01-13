@@ -4,7 +4,7 @@ import numpy as np
 # приклад: MFO_OTP = 300528  # постав своє значення
 # period = "2025-11"        # або будь-який тег періоду
 
-def build_client_turnover(df: pd.DataFrame, MFO_OTP: int, period: str | None = None) -> pd.DataFrame:
+def build_client_turnover(df: pd.DataFrame, MFO_OTP, period) -> pd.DataFrame:
     """
     Вхід: df транзакцій з колонками (мінімум):
       BANKAID, BANKBID,
@@ -44,10 +44,10 @@ def build_client_turnover(df: pd.DataFrame, MFO_OTP: int, period: str | None = N
     # 2) Логіка клієнта (A vs B) — як у твоєму старому коді:
     # DEBIT -> беремо A (CONTRAGENTA*)
     # CREDIT -> беремо B (CONTRAGENTB*)
-    df["CLIENT_ID"] = np.where(df["TYPE"].eq("DEBIT"), df["CONTRAGENTATID"], df["CONTRAGENTBTID"])
+    df["CLIENT_ID"] = np.where(df["TYPE"].eq("DEBIT"), df["CONTRAGENTAID"], df["CONTRAGENTBID"])
     df["CLIENT_IDENTIFYCODE"] = np.where(
         df["TYPE"].eq("DEBIT"),
-        df["CONTRAGENTATIDENTIFYCODE"],
+        df["CONTRAGENTAIDENTIFYCODE"],
         df["CONTRAGENTBIDENTIFYCODE"]
     )
     df["CLIENT_NAME"] = np.where(
@@ -67,20 +67,46 @@ def build_client_turnover(df: pd.DataFrame, MFO_OTP: int, period: str | None = N
     df["BANK_USED"] = df["BANK_USED"].astype("Int64").astype("string")  # щоб були коди як рядки
     df["CLIENT_ID"] = pd.to_numeric(df["CLIENT_ID"], errors="coerce")  # може бути NaN — ок
 
+    df["ACQ_TEXT"] = np.where(
+        df["TYPE"].eq("DEBIT"),
+        df["PLATPURPOSE"],        # для debit беремо PLATPURPOSE
+        df["PLATPURPOSE"]         # для credit теж PLATPURPOSE (за потреби можна міняти)
+    )
+
+    df["ACQ_COUNTERPARTY_NAME"] = np.where(
+        df["TYPE"].eq("DEBIT"),
+        df["CONTRAGENTASNAME"],
+        df["CONTRAGENTBSNAME"]
+    )
+
+    def safe_mode(s: pd.Series):
+        s = s.dropna().astype(str)
+        if s.empty:
+            return None
+        m = s.mode()
+        return m.iloc[0] if not m.empty else s.iloc[0]
+
+
+
     # 5) Агрегація обороту та банків
     # Банки: унікальні, відсортовані, через кому
     summary = (
-        df.groupby(["CLIENT_IDENTIFYCODE", "TYPE"], dropna=False)
-          .agg(
-              n_txn=(amount_col, "count"),
-              turnover=(amount_col, "sum"),
-              CLIENT_NAME=("CLIENT_NAME", "first"),
-              CLIENT_ID=("CLIENT_ID", "first"),
-              bank_used=("BANK_USED", lambda s: ", ".join(sorted(set([x for x in s.dropna().astype(str) if x != "<NA>"])))),
-          )
-          .reset_index()
-          .sort_values("turnover", ascending=False)
-    )
+    df.groupby(["CLIENT_IDENTIFYCODE", "TYPE"], dropna=False)
+      .agg(
+          n_txn=(amount_col, "count"),
+          turnover=(amount_col, "sum"),
+          CLIENT_NAME=("CLIENT_NAME", "first"),
+          CLIENT_ID=("CLIENT_ID", "first"),
+          bank_used=("BANK_USED", lambda s: ", ".join(sorted(set(s.dropna().astype(str))))),
+
+          # 👇 ОЦЕ ГОЛОВНЕ
+          ACQ_PLATPURPOSE=("ACQ_TEXT", safe_mode),
+          ACQ_COUNTERPARTY_NAME=("ACQ_COUNTERPARTY_NAME", safe_mode),
+      )
+      .reset_index()
+      .sort_values("turnover", ascending=False)
+    )   
+
 
     if period is not None:
         summary["PERIOD"] = period
