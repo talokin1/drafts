@@ -1,54 +1,75 @@
-import pdfplumber
-import pandas as pd
+with open("kved.json", encoding="utf-8") as f:
+    kved_raw = json.load(f)
 
-rows = []
+kved_new = pd.DataFrame([
+    {
+        "KVED_NEW": x.get("Код класу"),
+        "KVED_NEW_NAME": x.get("Назва")
+    }
+    for x in kved_raw
+    if "Код класу" in x and "Назва" in x
+]).dropna()
 
-with pdfplumber.open(r"C:\Projects\(DS-248) Parsing YouControl\uBKI_v2\kved20101-2005.cleaned.pdf") as pdf:
-    for page in pdf.pages:
-        table = page.extract_table()
-        if not table:
-            continue
-        rows.extend(table)
 
-df = pd.DataFrame(
-    rows,
-    columns=[
-        "kved_2010",
-        "name_2010",
-        "kved_2005",
-        "name_2005",
-        "description"
-    ]
-)
+def norm_text(s):
+    if not isinstance(s, str):
+        return ""
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
-df = df[~df["kved_2010"].str.contains("КВЕД", na=False)]
-df = df.dropna(how="all")
+df["DESCR_NORM"] = df["KVED_DESCR"].apply(norm_text)
+kved_new["NAME_NORM"] = kved_new["KVED_NEW_NAME"].apply(norm_text)
 
-df[["kved_2010", "name_2010"]] = df[["kved_2010", "name_2010"]].ffill()
-df[["kved_2005", "name_2005"]] = df[["kved_2005", "name_2005"]].ffill()
 
-def clean_code(x):
-    if not isinstance(x, str):
+def match_kved_descr(text, choices_df, threshold=85):
+    if not text:
+        return None, None, 0
+
+    choices = choices_df["NAME_NORM"].tolist()
+
+    match = process.extractOne(
+        text,
+        choices,
+        scorer=fuzz.token_sort_ratio
+    )
+
+    if match is None:
+        return None, None, 0
+
+    matched_text, score, idx = match
+
+    if score < threshold:
+        return None, None, score
+
+    row = choices_df.iloc[idx]
+    return row["KVED_NEW"], row["KVED_NEW_NAME"], score
+
+def get_division(kved):
+    if not isinstance(kved, str):
         return None
-    x = x.strip()
-    return x if x else None
+    m = re.match(r"(\d{2})", kved)
+    return m.group(1) if m else None
+df["DIV"] = df["KVED"].apply(get_division)
+kved_new["DIV"] = kved_new["KVED_NEW"].str[:2]
 
-for c in ["kved_2010", "kved_2005"]:
-    df[c] = df[c].apply(clean_code)
 
-mapping = (
-    df[["kved_2005", "kved_2010", "name_2010"]]
-    .dropna()
-    .drop_duplicates()
-    .reset_index(drop=True)
+
+results = []
+
+for i, row in df.iterrows():
+    div = row["DIV"]
+    text = row["DESCR_NORM"]
+
+    pool = kved_new[kved_new["DIV"] == div] if div else kved_new
+
+    new_kved, new_name, score = match_kved_descr(text, pool)
+
+    results.append((new_kved, new_name, score))
+
+
+
+df[["KVED_NEW", "KVED_NEW_NAME", "MATCH_SCORE"]] = pd.DataFrame(
+    results, index=df.index
 )
-
-mapping.to_csv(
-    "kved_2005_to_2010.csv",
-    index=False,
-    encoding="utf-8"
-)
-
-mapping["kved_2005"].nunique()
-mapping["kved_2010"].nunique()
-mapping.head(20)
