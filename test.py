@@ -1,17 +1,6 @@
-with open("kved.json", encoding="utf-8") as f:
-    kved_raw = json.load(f)
+import re
 
-kved_new = pd.DataFrame([
-    {
-        "KVED_NEW": x.get("Код класу"),
-        "KVED_NEW_NAME": x.get("Назва")
-    }
-    for x in kved_raw
-    if "Код класу" in x and "Назва" in x
-]).dropna()
-
-
-def norm_text(s):
+def norm(s):
     if not isinstance(s, str):
         return ""
     s = s.lower()
@@ -19,57 +8,49 @@ def norm_text(s):
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
-df["DESCR_NORM"] = df["KVED_DESCR"].apply(norm_text)
-kved_new["NAME_NORM"] = kved_new["KVED_NEW_NAME"].apply(norm_text)
+
+df["DESCR_NORM"] = df["KVED_DESCR"].apply(norm)
+kved_new["NAME_NORM"] = kved_new["KVED_NEW_NAME"].apply(norm)
 
 
-def match_kved_descr(text, choices_df, threshold=85):
+STOPWORDS = {
+    "діяльність", "та", "у", "і", "з", "на", "по", "інших", "інша",
+    "організацій", "організації", "професійних"
+}
+
+def anchors(name):
+    return [
+        w for w in name.split()
+        if len(w) > 4 and w not in STOPWORDS
+    ]
+kved_new["ANCHORS"] = kved_new["NAME_NORM"].apply(anchors)
+
+
+def match_by_in(text, ref_df):
     if not text:
-        return None, None, 0
+        return None, None
 
-    choices = choices_df["NAME_NORM"].tolist()
+    for _, r in ref_df.iterrows():
+        if not r["ANCHORS"]:
+            continue
 
-    match = process.extractOne(
-        text,
-        choices,
-        scorer=fuzz.token_sort_ratio
-    )
+        if all(a in text for a in r["ANCHORS"]):
+            return r["KVED_NEW"], r["KVED_NEW_NAME"]
 
-    if match is None:
-        return None, None, 0
+    return None, None
 
-    matched_text, score, idx = match
-
-    if score < threshold:
-        return None, None, score
-
-    row = choices_df.iloc[idx]
-    return row["KVED_NEW"], row["KVED_NEW_NAME"], score
-
-def get_division(kved):
-    if not isinstance(kved, str):
-        return None
-    m = re.match(r"(\d{2})", kved)
-    return m.group(1) if m else None
-df["DIV"] = df["KVED"].apply(get_division)
+df["DIV"] = df["KVED"].str[:2]
 kved_new["DIV"] = kved_new["KVED_NEW"].str[:2]
 
 
 
-results = []
+res = []
 
-for i, row in df.iterrows():
-    div = row["DIV"]
-    text = row["DESCR_NORM"]
-
-    pool = kved_new[kved_new["DIV"] == div] if div else kved_new
-
-    new_kved, new_name, score = match_kved_descr(text, pool)
-
-    results.append((new_kved, new_name, score))
-
-
-
-df[["KVED_NEW", "KVED_NEW_NAME", "MATCH_SCORE"]] = pd.DataFrame(
-    results, index=df.index
-)
+for _, row in df.iterrows():
+    pool = kved_new[kved_new["DIV"] == row["DIV"]]
+    kved_new_code, kved_new_name = match_by_in(
+        row["DESCR_NORM"],
+        pool
+    )
+    res.append((kved_new_code, kved_new_name))
+df[["KVED_NEW", "KVED_NEW_NAME"]] = res
