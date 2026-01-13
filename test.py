@@ -1,55 +1,59 @@
 import pandas as pd
+from pathlib import Path
 
-dfs = [t.df for t in tables]
-raw = pd.concat(dfs, ignore_index=True)
-raw.head()
-
-raw.columns = [
-    "kved_2010",
-    "name_2010",
-    "kved_2005",
-    "name_2005",
-    "description"
-]
-
-raw = raw.iloc[1:]  # прибрати повторні заголовки
-raw = raw.rename(columns={
-    0: "kved_2010",
-    1: "name_2010",
-    2: "kved_2005",
-    3: "name_2005",
-    4: "description"
-})
-
-def clean_code(x):
-    if not isinstance(x, str):
-        return None
-    x = x.strip()
-    return x if x else None
-
-for c in ["kved_2010", "kved_2005"]:
-    raw[c] = raw[c].apply(clean_code)
-
-raw["kved_2010"] = raw["kved_2010"].replace("", None)
-raw["kved_2005"] = raw["kved_2005"].replace("", None)
-
-raw[["kved_2010", "name_2010"]] = raw[["kved_2010", "name_2010"]].ffill()
-raw[["kved_2005", "name_2005"]] = raw[["kved_2005", "name_2005"]].ffill()
-
-mapping = raw[[
-    "kved_2005",
-    "kved_2010",
-    "name_2010"
-]].dropna()
-
-mapping.head(20)
-mapping["kved_2005"].value_counts().head()
-
-
-
-mapping.to_csv(
-    "kved_2005_to_2010.csv",
-    index=False,
-    encoding="utf-8"
+trxs = pd.read_parquet(
+    r"M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2025_11.parquet",
+    columns=[  # ОБОВʼЯЗКОВО
+        "ARCDATE",
+        "PLATPURPOSE",
+        "CONTRAGENTASNAME",
+        # + тільки те, що реально потрібно
+    ]
 )
+
+trxs["ARCDATE"] = pd.to_datetime(trxs["ARCDATE"]).dt.date
+
+
+
+dates = sorted(trxs["ARCDATE"].unique())
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+OUT_DIR = Path("M:/Controlling/tmp/acquiring_batches")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def process_batch(df: pd.DataFrame) -> pd.DataFrame:
+    # тут твоя логіка regex / score / flags
+    df["is_acquiring"] = df["PLATPURPOSE"].apply(detect_acquiring)
+    return df[["ARCDATE", "is_acquiring"]]
+
+
+
+for batch_dates in chunks(dates, 10):
+    batch_key = f"{batch_dates[0]}_{batch_dates[-1]}"
+    out_file = OUT_DIR / f"acq_{batch_key}.parquet"
+
+    if out_file.exists():
+        print(f"skip {batch_key}")
+        continue
+
+    batch_df = trxs[trxs["ARCDATE"].isin(batch_dates)]
+    result = process_batch(batch_df)
+
+    result.to_parquet(out_file, index=False)
+    print(f"saved {out_file}")
+
+
+files = list(OUT_DIR.glob("acq_*.parquet"))
+final = pd.concat(
+    (pd.read_parquet(f) for f in files),
+    ignore_index=True
+)
+
+final.to_parquet("acquiring_final.parquet", index=False)
+
+
 
