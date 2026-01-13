@@ -1,18 +1,3 @@
-if re.search(r"розр\w*", pp_text):
-    anchors = 0
-
-    if RE_COMMISSION.search(pp_text):
-        anchors += 1
-    if re.search(r"\bтт\b", pp_text):
-        anchors += 1
-    if re.search(r"реєстр", pp_text):
-        anchors += 1
-    if RE_CMPS_MERCHANT.search(pp_text):
-        anchors += 1
-
-    if anchors >= 2:
-        return pd.Series({
-            "is_acquiring": True,
-            "acq_reason": "acq_settlement",
-            "acq_score": 2 + anchors,
-        })
+\b(розр(ах(ун(ки|ків)?)?)?\.?|r/р)\s*за\s*(плат(іжн(ими|их)?)?\.?\s*)?(карт(ами|ками|к\.?)|пк)\b
+if RE_ACQ_SETTLEMENT.search(text):
+    return True   # 100% acquiring, не дивимось більше ні на що
