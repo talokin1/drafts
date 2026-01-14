@@ -1,25 +1,35 @@
-RE_REFUND_UTILITIES = re.compile(
-    r"\b("
-    r"електроенерг\w*|"
-    r"ел\.?енерг\w*|"
-    r"е/енерг\w*|"
-    r"теплопостачан\w*|"
-    r"водопостачан\w*|"
-    r"реактивн\w*|"
-    r"газопостачан\w*|"
-    r"вивезенн\w*|"
-    r"тпв|"
-    r"жкг"
-    r")\b",
-    re.IGNORECASE
+opf_ref = (
+    opf_df[["FIRM_OPFCD", "FIRM_OPFNM"]]
+    .dropna()
+    .drop_duplicates()
+    .rename(columns={
+        "FIRM_OPFCD": "OPF_CODE",
+        "FIRM_OPFNM": "OPF_NAME"
+    })
 )
 
-text = normalize_ua(pp_text)
+opf_ref["OPF_NAME_NORM"] = (
+    opf_ref["OPF_NAME"]
+    .str.lower()
+    .str.replace(r"\s+", " ", regex=True)
+    .str.strip()
+)
 
-if RE_REFUND_BASE.search(text) and (
-    RE_REFUND_NON_ACQ_STRONG.search(text)
-    or RE_REFUND_UTILITIES.search(text)
-    or RE_REFUND_TAX.search(text)
-):
-    is_acquiring = False
-    reason = "refund_non_acquiring"
+
+df["FULL_NAME_NORM"] = (
+    df["Повна назва"]
+    .astype(str)
+    .str.lower()
+    .str.replace(r"[«»\"']", "", regex=True)
+    .str.replace(r"\s+", " ", regex=True)
+    .str.strip()
+)
+
+def extract_opf(full_name_norm, opf_ref):
+    for _, r in opf_ref.iterrows():
+        if full_name_norm.startswith(r["OPF_NAME_NORM"]):
+            return r["OPF_CODE"], r["OPF_NAME"]
+    return None, None
+df[["OPF_CODE", "OPF_NAME"]] = df["FULL_NAME_NORM"].apply(
+    lambda x: pd.Series(extract_opf(x, opf_ref))
+)
