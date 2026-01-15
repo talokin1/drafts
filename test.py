@@ -1,29 +1,8 @@
-a_side = (
-    trxs
-    .loc[trxs["CONTRAGENTAIDENTIFYCODE"].isin(client_ids),
-         ["CONTRAGENTAIDENTIFYCODE", "BANKAID"]]
-    .rename(columns={
-        "CONTRAGENTAIDENTIFYCODE": "IDENTIFYCODE",
-        "BANKAID": "BANKID"
-    })
-)
+pip uninstall -y numpy scikit-learn imbalanced-learn scipy lightgbm
 
-b_side = (
-    trxs
-    .loc[trxs["CONTRAGENTBIDENTIFYCODE"].isin(client_ids),
-         ["CONTRAGENTBIDENTIFYCODE", "BANKBID"]]
-    .rename(columns={
-        "CONTRAGENTBIDENTIFYCODE": "IDENTIFYCODE",
-        "BANKBID": "BANKID"
-    })
-)
-
-
-client_banks = (
-    pd.concat([a_side, b_side], ignore_index=True)
-    .dropna(subset=["BANKID"])
-    .groupby("IDENTIFYCODE", as_index=False)
-    .agg(
-        BANKS=("BANKID", lambda x: sorted(set(x)))
-    )
-)
+pip install \
+  numpy==1.26.4 \
+  scipy==1.11.4 \
+  scikit-learn==1.3.2 \
+  imbalanced-learn==0.11.0 \
+  lightgbm
