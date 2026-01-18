@@ -1,30 +1,14 @@
-def transform_date(value):
-    if pd.isna(value):
-        return None
-
-    parts = [part.strip() for part in value.split(',')]
-    if len(parts) == 2:
-        month, year = parts
-        month_num = month_map.get(month)
-        if month_num:
-            return f"{year}_{month_num}"
-
-    return None
-
-df["year_month"] = df["Дата дзвінка"].apply(transform_date)
-
-for ym, g in df.dropna(subset=["year_month"]).groupby("year_month"):
-    filename = f"NPS_{ym}.parquet"
-    g.to_parquet(os.path.join(FILEPATH, filename), index=False)
-    print(f"Saved {filename}. Rows = {len(g)}")
+def target_sanity(y: pd.Series, name: str):
+    print(f"=== {name} ===")
+    print("n:", len(y))
+    print("zeros:", (y == 0).mean())
+    print("negatives:", (y < 0).sum())
+    print("min:", y.min())
+    print("median:", y.median())
+    print("p90:", y.quantile(0.90))
+    print("p99:", y.quantile(0.99))
+    print("max:", y.max())
 
 
-
-total = len(df)
-parsed = df["year_month"].notna().sum()
-missing = df["year_month"].isna().sum()
-
-print(f"Total rows:   {total}")
-print(f"Parsed rows:  {parsed}")
-print(f"Missing rows:{missing}")
-print(f"Parsed %:    {parsed / total:.2%}")
+target_sanity(targets["CURR_ACC"], "CURR_ACC")
+target_sanity(targets["TERM_DEPOSITS"], "TERM_DEPOSITS")
