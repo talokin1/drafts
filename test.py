@@ -1,43 +1,65 @@
+import numpy as np
 import lightgbm as lgb
-from sklearn.metrics import roc_auc_score, classification_report, confusion_matrix
+from sklearn.metrics import mean_absolute_error, r2_score
 
-# 1. Визначаємо поріг "VIP клієнта"
-# Давайте глянемо медіану або 75-й перцентиль, щоб виділити топ компаній
-threshold = df['CURR_ACC'].quantile(0.75) 
-print(f"Поріг VIP-клієнта: {threshold:.2f} грн")
+# 1. Фільтруємо тренувальні дані (беремо тільки тих, кого ми вважаємо "цільовими")
+# Важливо: використовуємо реальні мітки (y_train_cls), а не передбачення класифікатора,
+# щоб регресор вчився на "чистій" істині.
+mask_vip_train = y_train_cls == 1 
+X_train_reg = X_train[mask_vip_train]
+y_train_reg_log = y_train_log[mask_vip_train] # Нагадую, таргет логарифмований!
 
-# 2. Створюємо новий таргет для класифікації
-y_class = (df['CURR_ACC'] >= threshold).astype(int)
+print(f"Навчаємо регресію на {len(X_train_reg)} об'єктах (VIP сегмент)...")
 
-# 3. Спліт (використовуємо ті самі X, що і раніше)
-X_train, X_test, y_train_cls, y_test_cls = train_test_split(
-    X, y_class, test_size=0.2, random_state=42, stratify=y_class
-)
-
-# 4. Тренуємо Класифікатор
-clf = lgb.LGBMClassifier(
+# 2. Ініціалізуємо та вчимо регресор
+regressor = lgb.LGBMRegressor(
+    objective='regression',
+    metric='mae',        # MAE краще сприймає викиди, ніж MSE
     n_estimators=500,
     learning_rate=0.05,
     num_leaves=31,
     random_state=42,
-    n_jobs=-1,
-    class_weight='balanced' # Важливо! Щоб звернути увагу на менший клас VIP
+    n_jobs=-1
 )
 
-print("Тренуємо класифікатор...")
-clf.fit(X_train, y_train_cls, categorical_feature=cat_features)
+regressor.fit(
+    X_train_reg, 
+    y_train_reg_log, 
+    categorical_feature=cat_features
+)
+print("Регресор навчено")
 
-# 5. Перевіряємо якість
-preds_proba = clf.predict_proba(X_test)[:, 1]
-preds_class = clf.predict(X_test)
 
-auc = roc_auc_score(y_test_cls, preds_proba)
-print(f"\n--- Результати Класифікації ---")
-print(f"ROC-AUC: {auc:.4f}")
-print("\nConfusion Matrix:")
-print(confusion_matrix(y_test_cls, preds_class))
-print("\nReport:")
-print(classification_report(y_test_cls, preds_class))
+def final_predict(X_input, classifier, regressor, baseline_value=0):
+    """
+    X_input: вхідні дані
+    classifier: навчена модель класифікації
+    regressor: навчена модель регресії
+    baseline_value: скільки прогнозуємо для "дрібних" (можна поставити 0 або медіану дрібних)
+    """
+    # 1. Етап класифікації
+    # Прогнозуємо клас (0 або 1)
+    pred_classes = classifier.predict(X_input)
+    
+    # 2. Етап регресії
+    # Робимо прогноз регресії для ВСІХ (це швидше векторизовано, ніж фільтрувати)
+    pred_log = regressor.predict(X_input)
+    pred_amounts = np.expm1(pred_log) # Повертаємо з логарифма в гроші
+    
+    # 3. Комбінація (Hurdle Logic)
+    # Якщо клас 1 -> беремо прогноз регресії
+    # Якщо клас 0 -> беремо baseline_value
+    final_predictions = np.where(pred_classes == 1, pred_amounts, baseline_value)
+    
+    return final_predictions
 
-# 6. Важливість фічей для класифікації
-lgb.plot_importance(clf, max_num_features=15, importance_type='gain', title='Top Features for Classifying VIPs')
+# --- Перевірка на тестових даних ---
+final_preds = final_predict(X_test, clf, regressor, baseline_value=500) # Наприклад, дрібним ставимо 500 грн
+
+# Оцінка фінального результату
+final_mae = mean_absolute_error(np.expm1(y_test_log), final_preds) # Порівнюємо з реальними грошима
+final_r2 = r2_score(np.expm1(y_test_log), final_preds)
+
+print(f"\n--- ФІНАЛЬНИЙ РЕЗУЛЬТАТ (Two-Stage Model) ---")
+print(f"MAE: {final_mae:.2f} грн")
+print(f"R2: {final_r2:.4f}")
