@@ -1,111 +1,76 @@
+def clip_outliers(df, lower_q=0.01, upper_q=0.99):
+    """
+    Обрізає 1% екстремальних значень зверху та знизу, замінюючи їх на граничні значення.
+    Це краще, ніж видаляти рядки.
+    """
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    
+    for col in numeric_cols:
+        # Не чіпаємо таргет
+        if col == 'CURR_ACC': continue
+        
+        lower = df[col].quantile(lower_q)
+        upper = df[col].quantile(upper_q)
+        
+        # Замінюємо все, що вище 99-го перцентиля, на значення 99-го перцентиля
+        df[col] = df[col].clip(lower=lower, upper=upper)
+        
+    return df
+
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-from sklearn.model_selection import train_test_split
-from sklearn.inspection import permutation_importance
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.stats import skew
 
-# --- 1. Попередня обробка та Feature Engineering ---
-print("Підготовка даних...")
+def smart_log_transform(df, threshold=1.0, show_plots=True):
+    """
+    Автоматично знаходить числові колонки з високим перекосом (skew > threshold)
+    та застосовує до них log1p.
+    """
+    df_transformed = df.copy()
+    
+    # Вибираємо тільки числові колонки
+    numeric_cols = df_transformed.select_dtypes(include=['number']).columns.tolist()
+    
+    # Виключаємо таргет та бінарні колонки (0/1) з обробки
+    exclude_cols = ['CURR_ACC', 'TARGET', 'y_class'] 
+    numeric_cols = [c for c in numeric_cols if c not in exclude_cols and df_transformed[c].nunique() > 2]
 
-# Логарифмування вхідних числових фічей (Дуже важливо для фінансів!)
-# Шукаємо стовпчики, схожі на гроші (можна задати список вручну)
-money_cols = ['REVENUE_CUR', 'REVENUE_PREV', 'CASH_CURR', 'NB_EMPL'] # Додайте свої
-for col in money_cols:
-    if col in df.columns:
-        # log1p(x) = log(x + 1) - безпечно для нулів
-        df[f'{col}_LOG'] = np.log1p(df[col].clip(lower=0)) 
+    print(f"{'Column':<20} | {'Skew (Original)':<15} | {'Action'}")
+    print("-" * 50)
 
-# Створення нових фічей (Ratios)
-if 'CASH_CURR' in df.columns and 'REVENUE_CUR' in df.columns:
-    # Яка частка кешу від доходу?
-    df['CASH_TO_REVENUE'] = df['CASH_CURR'] / (df['REVENUE_CUR'] + 1)
+    for col in numeric_cols:
+        # Рахуємо асиметрію (ігноруємо NaN для розрахунку)
+        skew_val = df_transformed[col].skew()
+        
+        if skew_val > threshold:
+            # 1. Застосовуємо логарифм
+            # clip(lower=0) гарантує, що не буде помилки log від від'ємного числа
+            df_transformed[f'{col}_LOG'] = np.log1p(df_transformed[col].clip(lower=0))
+            new_skew = df_transformed[f'{col}_LOG'].skew()
+            
+            print(f"{col:<20} | {skew_val:.2f}           -> Log Transform (New Skew: {new_skew:.2f})")
+            
+            # 2. Візуалізація (опціонально)
+            if show_plots:
+                fig, axes = plt.subplots(1, 2, figsize=(10, 3))
+                sns.histplot(df[col], bins=30, ax=axes[0], color='salmon')
+                axes[0].set_title(f'Original {col} (Skew: {skew_val:.2f})')
+                
+                sns.histplot(df_transformed[f'{col}_LOG'], bins=30, ax=axes[1], color='skyblue')
+                axes[1].set_title(f'Log Transformed (Skew: {new_skew:.2f})')
+                plt.tight_layout()
+                plt.show()
+        else:
+            print(f"{col:<20} | {skew_val:.2f}           -> Keep as is")
+            
+    return df_transformed
 
-# Категоріальні змінні
-cat_features = [c for c in df.columns if df[c].dtype.name in ['category', 'object']]
-for c in cat_features:
-    df[c] = df[c].astype('category')
+# --- Використання ---
+# Припускаємо, що df вже завантажено
 
-# --- 2. Розбиття даних (Correct Split) ---
-THRESHOLD = 1000
-TARGET_COL = 'CURR_ACC'
+# Спочатку обрізаємо екстремуми, потім логарифмуємо
+df = clip_outliers(df)
+df = smart_log_transform(df)
 
-X = df.drop(columns=[TARGET_COL])
-y = df[TARGET_COL].clip(lower=0)
-
-# Створюємо бінарний таргет для стратифікації
-y_class = (y > THRESHOLD).astype(int)
-
-# 1. Відрізаємо Тест (Holdout) - його НЕ ЧІПАЄМО до фінального звіту
-X_temp, X_test, y_temp, y_test, y_cls_temp, y_cls_test = train_test_split(
-    X, y, y_class, test_size=0.2, random_state=42, stratify=y_class
-)
-
-# 2. Розбиваємо залишок на Train та Validation (для відбору фічей та тюнінгу)
-X_train, X_val, y_train, y_val, y_cls_train, y_cls_val = train_test_split(
-    X_temp, y_temp, y_cls_temp, test_size=0.25, random_state=42, stratify=y_cls_temp
-) 
-# (0.25 від 80% = 20% загальної вибірки. Разом: 60% Train, 20% Val, 20% Test)
-
-# --- 3. Підготовка для Регресії (Log Target) ---
-# Навчаємо регресію тільки на "платниках" (y > 0 або > THRESHOLD)
-mask_vip_train = y_cls_train == 1
-mask_vip_val   = y_cls_val == 1
-
-X_train_reg = X_train[mask_vip_train]
-y_train_reg_log = np.log1p(y_train[mask_vip_train])
-
-X_val_reg = X_val[mask_vip_val]
-y_val_reg_log = np.log1p(y_val[mask_vip_val])
-
-# --- 4. Відбір фічей (на Validation сеті!) ---
-print("\nВідбір корисних фічей (Permutation Importance)...")
-
-temp_reg = lgb.LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
-temp_reg.fit(X_train_reg, y_train_reg_log, categorical_feature=cat_features)
-
-# ВАЖЛИВО: Рахуємо важливість на X_val, а не на X_test!
-perm_result = permutation_importance(
-    temp_reg, X_val_reg, y_val_reg_log,
-    n_repeats=5, random_state=42, n_jobs=-1
-)
-
-importance_df = pd.DataFrame({'feature': X.columns, 'importance': perm_result.importances_mean})
-# Беремо тільки ті, що реально покращують метрику (> 0)
-USEFUL_FEATURES = importance_df[importance_df['importance'] > 0]['feature'].tolist()
-
-print(f"Знайдено корисних фічей: {len(USEFUL_FEATURES)} із {len(X.columns)}")
-print(f"ТОП-5: {USEFUL_FEATURES[:5]}")
-
-# Якщо список порожній (рідко, але буває)
-if not USEFUL_FEATURES:
-    USEFUL_FEATURES = X.columns.tolist()
-
-# Оновлюємо список категоріальних фічей (тільки ті, що лишилися)
-cat_features_opt = [c for c in USEFUL_FEATURES if c in cat_features]
-
-# --- 5. Навчання Фінальних Моделей ---
-print("\nНавчання фінальних моделей...")
-
-# Класифікатор (можна на всіх фічах, або теж на USEFUL)
-clf = lgb.LGBMClassifier(
-    n_estimators=500, learning_rate=0.03, num_leaves=31,
-    class_weight='balanced', random_state=42, verbose=-1
-)
-clf.fit(X_train, y_cls_train, categorical_feature=cat_features, 
-        eval_set=[(X_val, y_cls_val)], callbacks=[lgb.early_stopping(50)])
-
-# Регресор (Тільки на корисних фічах)
-reg = lgb.LGBMRegressor(
-    n_estimators=500, learning_rate=0.05, num_leaves=31,
-    objective='regression_l1', # Спробуйте L1 (MAE) або 'tweedie'
-    random_state=42, verbose=-1
-)
-reg.fit(
-    X_train_reg[USEFUL_FEATURES], 
-    y_train_reg_log,
-    categorical_feature=cat_features_opt,
-    eval_set=[(X_val_reg[USEFUL_FEATURES], y_val_reg_log)],
-    callbacks=[lgb.early_stopping(50)]
-)
-
-print("\nГотово! Тепер можна перевіряти на X_test.")
