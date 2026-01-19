@@ -1,146 +1,92 @@
-TARGET_COL = "CURR_ACC"
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+from sklearn.inspection import permutation_importance
+import matplotlib.pyplot as plt
 
-# categorical features
-cat_features = [c for c in df.columns if df[c].dtype.name in ["object", "category"]]
-for c in cat_features:
-    df[c] = df[c].astype("category")
+def auto_select_features(X_train, y_train, X_val, y_val, cat_features, task='regression', threshold=0.0):
+    """
+    Автоматично відбирає фічі на основі Permutation Importance.
+    
+    Args:
+        task: 'regression' (для R2) або 'classification' (для AUC)
+        threshold: поріг важливості. Фічі з важливістю <= threshold будуть видалені.
+                   Для жорсткої чистки став > 0 (наприклад, 0.001).
+    """
+    print(f"Starting feature selection. Initial count: {X_train.shape[1]}")
+    
+    # 1. Швидке навчання базової моделі
+    params = {
+        'n_estimators': 500,
+        'learning_rate': 0.05,
+        'n_jobs': -1,
+        'random_state': 42,
+        'verbose': -1
+    }
+    
+    if task == 'regression':
+        model = lgb.LGBMRegressor(objective='regression', metric='rmse', **params)
+        scoring = 'r2'
+    else:
+        model = lgb.LGBMClassifier(objective='binary', metric='auc', class_weight='balanced', **params)
+        scoring = 'roc_auc'
 
-# target
-y = df[TARGET_COL].clip(lower=0)
-X = df.drop(columns=[TARGET_COL])
+    # Важливо: fit робимо на train
+    model.fit(
+        X_train, y_train, 
+        categorical_feature=cat_features,
+        eval_set=[(X_val, y_val)],
+        callbacks=[lgb.early_stopping(30, verbose=False)]
+    )
+    
+    # 2. Permutation Importance (рахуємо на VAL сеті - це критично!)
+    print(f"Calculating permutation importance on Validation set ({scoring})...")
+    r = permutation_importance(
+        model, X_val, y_val,
+        n_repeats=5,       # Кількість прогонів для стабільності
+        random_state=42,
+        n_jobs=-1,
+        scoring=scoring
+    )
+    
+    # 3. Аналіз результатів
+    importances = r.importances_mean
+    feature_names = X_train.columns
+    
+    feature_imp_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importances
+    }).sort_values(by='importance', ascending=False)
+    
+    # 4. Фільтрація
+    # Залишаємо тільки ті, де важливість > порогу (і не від'ємна)
+    selected_features = feature_imp_df[feature_imp_df['importance'] > threshold]['feature'].tolist()
+    dropped_features = feature_imp_df[feature_imp_df['importance'] <= threshold]['feature'].tolist()
+    
+    print(f"\nDone. Kept {len(selected_features)} features. Dropped {len(dropped_features)}.")
+    print(f"Top 5 features:\n{feature_imp_df.head(5)}")
+    print(f"Worst 5 features (noise):\n{feature_imp_df.tail(5)}")
+    
+    return selected_features, feature_imp_df
 
-# stage-1 labels (ZERO vs POSITIVE)
-y_cls = (y > 0).astype(int)
+# ==========================================
+# ВИКОРИСТАННЯ (встав це перед основним навчанням)
+# ==========================================
 
-print("Class balance:")
-print(y_cls.value_counts(normalize=True))
-
-X_train, X_val, y_train, y_val, y_cls_train, y_cls_val = train_test_split(
-    X, y, y_cls,
-    test_size=0.2,
-    random_state=42,
-    stratify=y_cls
+# 1. Для Регресора (найважливіше для R2)
+# Використовуй ті ж маски, що я радив раніше (тільки багаті клієнти), або повний сет
+good_features_reg, df_imp = auto_select_features(
+    X_train_reg, y_train_reg,  # Твої підготовлені датасети для регресії
+    X_val_reg, y_val_reg, 
+    cat_features=cat_features,
+    task='regression',
+    threshold=0.0001 # Відсікаємо все, що не дає хоча б мінімального приросту R2
 )
 
-assert y_cls_train.nunique() == 2
-assert y_cls_val.nunique() == 2
+# 2. Оновлюємо датасети
+X_train_reg_opt = X_train_reg[good_features_reg]
+X_val_reg_opt = X_val_reg[good_features_reg]
 
-
-
-clf = lgb.LGBMClassifier(
-    objective="binary",
-    n_estimators=1500,
-    learning_rate=0.03,
-    num_leaves=31,
-    min_child_samples=50,
-    class_weight="balanced",
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    n_jobs=-1
-)
-
-clf.fit(
-    X_train,
-    y_cls_train,
-    categorical_feature=cat_features,
-    eval_set=[(X_val, y_cls_val)],
-    eval_metric="auc",
-    callbacks=[lgb.early_stopping(50)],
-)
-auc = roc_auc_score(y_cls_val, clf.predict_proba(X_val)[:, 1])
-print(f"Stage-1 ROC-AUC: {auc:.4f}")
-
-
-
-mask_train_pos = y_train > 0
-mask_val_pos   = y_val > 0
-
-X_train_reg = X_train[mask_train_pos]
-X_val_reg   = X_val[mask_val_pos]
-
-y_train_reg = np.log1p(y_train[mask_train_pos])
-y_val_reg   = np.log1p(y_val[mask_val_pos])
-
-
-reg = lgb.LGBMRegressor(
-    objective="quantile",      # краще для heavy-tail
-    alpha=0.5,
-    n_estimators=3000,
-    learning_rate=0.03,
-    num_leaves=128,
-    min_child_samples=100,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    n_jobs=-1
-)
-
-reg.fit(
-    X_train_reg,
-    y_train_reg,
-    categorical_feature=cat_features,
-    eval_set=[(X_val_reg, y_val_reg)],
-    eval_metric="mae",
-    callbacks=[lgb.early_stopping(50)],
-)
-
-def predict_two_stage(X, clf, reg, threshold):
-    probs = clf.predict_proba(X)[:, 1]
-    preds = np.zeros(len(X))
-
-    mask = probs > threshold
-    if mask.sum() > 0:
-        preds_log = reg.predict(X[mask])
-        preds[mask] = np.expm1(preds_log)
-
-    return preds
-
-probs = clf.predict_proba(X_val)[:, 1]
-
-best = None
-for t in np.linspace(0.1, 0.9, 81):
-    preds = predict_two_stage(X_val, clf, reg, threshold=t)
-    mae = mean_absolute_error(y_val, preds)
-    if best is None or mae < best[0]:
-        best = (mae, t)
-
-best_mae, best_t = best
-print(f"Best threshold: {best_t:.2f}")
-print(f"Best MAE: {best_mae:,.2f}")
-
-y_pred = predict_two_stage(X_val, clf, reg, threshold=best_t)
-
-mae = mean_absolute_error(y_val, y_pred)
-r2  = r2_score(y_val, y_pred)
-
-print("=" * 40)
-print(f"FINAL MAE (грн): {mae:,.2f}")
-print(f"FINAL R²:       {r2:.4f}")
-print("=" * 40)
-
-
-mask_plot = (y_val > 0) & (y_pred > 0)
-
-plt.figure(figsize=(8,6))
-plt.scatter(y_val[mask_plot], y_pred[mask_plot], alpha=0.3, s=10)
-plt.plot([1, y_val.max()], [1, y_val.max()], "r--")
-plt.xscale("log")
-plt.yscale("log")
-plt.xlabel("True CURR_ACC")
-plt.ylabel("Predicted CURR_ACC")
-plt.title("Two-Stage Model: True vs Predicted")
-plt.show()
-
-
-# baseline 0
-mae_zero = mean_absolute_error(y_val, np.zeros_like(y_val))
-
-# baseline median (only for positive)
-med = np.median(y_train[y_train > 0])
-pred_med = np.zeros_like(y_val)
-pred_med[y_val > 0] = med
-mae_med = mean_absolute_error(y_val, pred_med)
-
-print(f"Baseline ZERO MAE:   {mae_zero:,.2f}")
-print(f"Baseline MEDIAN MAE: {mae_med:,.2f}")
+# Тепер вчимо фінальну модель на X_train_reg_opt
+print("Re-training final model with optimized features...")
+# ... твій код reg.fit(X_train_reg_opt, ...)
