@@ -1,12 +1,27 @@
-# Перевірка ТІЛЬКИ на реальних VIP-клієнтах з тестового набору
+from sklearn.inspection import permutation_importance
+
+# Беремо вашого навченого регресора і VIP-вибірку
+# X_test_reg - це тільки ті об'єкти з тесту, де реально є гроші (>1000)
+# y_test_reg_log - логарифм їхніх сум
+
 mask_vip_test = y_test_cls == 1
-X_test_vip = X_test[mask_vip_test]
-y_test_vip_log = y_test_log[mask_vip_test]
+X_test_reg = X_test[mask_vip_test]
+y_test_reg_log = y_test_log[mask_vip_test]
 
-# Прогноз чистого регресора
-pred_log_vip = regressor.predict(X_test_vip)
-pred_amount_vip = np.expm1(pred_log_vip)
-true_amount_vip = np.expm1(y_test_vip_log)
+print("Рахуємо Permutation Importance (це займе хвилину)...")
+result = permutation_importance(
+    regressor, X_test_reg, y_test_reg_log, 
+    n_repeats=5, random_state=42, n_jobs=-1
+)
 
-r2_vip = r2_score(true_amount_vip, pred_amount_vip)
-print(f"R2 регресора в ідеальних умовах: {r2_vip:.4f}")
+# Сортуємо і виводимо
+sorted_idx = result.importances_mean.argsort()
+
+plt.figure(figsize=(12, 8))
+plt.boxplot(
+    result.importances[sorted_idx].T,
+    vert=False, labels=X_test_reg.columns[sorted_idx]
+)
+plt.title("Які фічі РЕАЛЬНО впливають на прогноз суми (Permutation Importance)")
+plt.tight_layout()
+plt.show()
