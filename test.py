@@ -1,27 +1,26 @@
-from sklearn.inspection import permutation_importance
+# Отримуємо важливості з результату permutation_importance
+importances = result.importances_mean
+feature_names = X_test_reg.columns
 
-# Беремо вашого навченого регресора і VIP-вибірку
-# X_test_reg - це тільки ті об'єкти з тесту, де реально є гроші (>1000)
-# y_test_reg_log - логарифм їхніх сум
+# Створюємо DataFrame і сортуємо
+feature_importance_df = pd.DataFrame({'feature': feature_names, 'importance': importances})
+feature_importance_df = feature_importance_df.sort_values(by='importance', ascending=False)
 
-mask_vip_test = y_test_cls == 1
-X_test_reg = X_test[mask_vip_test]
-y_test_reg_log = y_test_log[mask_vip_test]
+# Дивимось на ТОП-10 і на "сміття"
+print("--- ТОП-10 НАЙКРАЩИХ ФІЧ ---")
+print(feature_importance_df.head(10))
 
-print("Рахуємо Permutation Importance (це займе хвилину)...")
-result = permutation_importance(
-    regressor, X_test_reg, y_test_reg_log, 
-    n_repeats=5, random_state=42, n_jobs=-1
-)
+print("\n--- КІЛЬКІСТЬ ШКІДЛИВИХ ФІЧ (Importance <= 0) ---")
+print((feature_importance_df['importance'] <= 0).sum())
 
-# Сортуємо і виводимо
-sorted_idx = result.importances_mean.argsort()
 
-plt.figure(figsize=(12, 8))
-plt.boxplot(
-    result.importances[sorted_idx].T,
-    vert=False, labels=X_test_reg.columns[sorted_idx]
-)
-plt.title("Які фічі РЕАЛЬНО впливають на прогноз суми (Permutation Importance)")
-plt.tight_layout()
-plt.show()
+# Залишаємо тільки корисне
+useful_features = feature_importance_df[feature_importance_df['importance'] > 0]['feature'].tolist()
+print(f"Залишаємо {len(useful_features)} фіч із {len(feature_names)}")
+
+# Перенавчаємо регресор ТІЛЬКИ на них
+X_train_reg_opt = X_train_reg[useful_features]
+X_test_opt = X_test[useful_features] # Для фінального тесту
+
+regressor_opt = lgb.LGBMRegressor(n_estimators=500, learning_rate=0.05, num_leaves=31, random_state=42)
+regressor_opt.fit(X_train_reg_opt, y_train_reg_log, categorical_feature=[c for c in useful_features if c in cat_features])
