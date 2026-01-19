@@ -1,69 +1,63 @@
-import numpy as np
-import lightgbm as lgb
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# 1. Очистка від "технічних" мінусів (овердрафтів)
-df['CURR_ACC'] = df['CURR_ACC'].clip(lower=0)
+# Виберемо топ-3 фічі, які (логічно) мають впливати на наявність грошей
+# Наприклад: Оборот, Попередній кеш, Активи (заміни на свої реальні назви колонок!)
+top_features = ['REVENUE_CUR', 'CASH_PREV', 'ASSETS_DIF'] 
 
-# Сітка для пошуку ідеального варіанту
-# Додав 10 (мій фаворит) і 50 (більш консервативний)
-thresholds = [5, 10, 25, 50] 
-
-best_mae = float('inf')
-best_threshold = 0
-results = {}
-
-print("Починаємо пошук оптимального порогу...")
+thresholds = [0, 1, 5, 10, 20, 50, 100, 200]
+correlations = {feat: [] for feat in top_features}
 
 for t in thresholds:
-    # КРОК A: Класифікація "Чи є значуща сума?"
-    # 1 - це клієнт з грошима (> t), 0 - пустий або "сміттєвий" залишок
-    y_class_temp = (df['CURR_ACC'] > t).astype(int)
+    # Створюємо бінарний таргет для цього порогу
+    binary_target = (df['CURR_ACC'] > t).astype(int)
     
-    # Стратифікований спліт
-    X_train, X_test, y_cls_train, y_cls_test = train_test_split(
-        df.drop(columns=['CURR_ACC']), y_class_temp,
-        test_size=0.2, random_state=42, stratify=y_class_temp
-    )
-    
-    # КРОК B: Навчання Класифікатора
-    clf = lgb.LGBMClassifier(n_estimators=200, random_state=42, class_weight='balanced', verbose=-1)
-    clf.fit(X_train, y_cls_train, categorical_feature=cat_features)
-    
-    # КРОК C: Навчання Регресора (ТІЛЬКИ на "живих" клієнтах з трейну)
-    mask_vip_train = y_cls_train == 1
-    X_reg_train = X_train[mask_vip_train]
-    
-    # Важливо: ми вчимо регресор передбачати точну суму
-    # Але оскільки ми відсікли < t, дані будуть чистішими
-    y_reg_train_log = np.log1p(df.loc[X_reg_train.index, 'CURR_ACC'])
-    
-    reg = lgb.LGBMRegressor(n_estimators=200, random_state=42, verbose=-1)
-    reg.fit(X_reg_train, y_reg_train_log, categorical_feature=cat_features)
-    
-    # КРОК D: Валідація (Two-Stage Prediction)
-    # 1. Ймовірність
-    prob_active = clf.predict_proba(X_test)[:, 1]
-    
-    # 2. Прогноз суми (для всіх, потім занулимо)
-    pred_log = reg.predict(X_test)
-    pred_amount = np.expm1(pred_log)
-    
-    # 3. Комбінація (Soft Gating)
-    # Формула: Ймовірність * Прогноз суми
-    # Це "очікувана вартість" (Expected Value)
-    final_pred = prob_active * pred_amount
-    
-    # Рахуємо реальний MAE
-    y_true = df.loc[X_test.index, 'CURR_ACC']
-    mae = mean_absolute_error(y_true, final_pred)
-    
-    results[t] = mae
-    print(f"Threshold {t} грн -> MAE: {mae:.2f}")
-    
-    if mae < best_mae:
-        best_mae = mae
-        best_threshold = t
+    for feat in top_features:
+        # Рахуємо кореляцію Спірмена (бо розподіли не нормальні)
+        corr = df[feat].corr(binary_target, method='spearman')
+        correlations[feat].append(corr)
 
-print(f"\n🏆 Переможець: {best_threshold} грн (MAE: {best_mae:.2f})")
+# Візуалізація
+plt.figure(figsize=(10, 6))
+for feat in top_features:
+    plt.plot(thresholds, correlations[feat], marker='o', label=feat)
+
+plt.title('Як змінюється "читабельність" клієнта залежно від порогу')
+plt.xlabel('Поріг відсікання (грн)')
+plt.ylabel('Кореляція фічі з класом (Spearman)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+
+
+plt.figure(figsize=(12, 5))
+
+# Беремо тільки тих, у кого є хоч копійка, і логарифмуємо
+# log10 зручніше для сприйняття (1 = 10 грн, 2 = 100 грн, -1 = 0.1 грн)
+log_data = np.log10(df[df['CURR_ACC'] > 0]['CURR_ACC'])
+
+sns.histplot(log_data, bins=100, kde=True)
+
+# Додаємо мітки для зрозумілості
+plt.xticks([-1, 0, 1, 2, 3], ['0.1 грн', '1 грн', '10 грн', '100 грн', '1000 грн'])
+plt.title('Розподіл залишків у логарифмічній шкалі')
+plt.xlabel('Сума (Log10)')
+plt.axvline(x=np.log10(10), color='r', linestyle='--', label='Поріг 10 грн')
+plt.legend()
+plt.show()
+
+
+
+
+stats = []
+total_rows = len(df)
+
+for t in [0, 5, 10, 50, 100]:
+    count_active = (df['CURR_ACC'] > t).sum()
+    share = count_active / total_rows * 100
+    stats.append({'Threshold': t, 'Active_Clients': count_active, 'Share_%': share})
+
+pd.DataFrame(stats)
