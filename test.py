@@ -1,111 +1,207 @@
+import re
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
+
+from lightgbm import LGBMRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.inspection import permutation_importance
+from sklearn.metrics import mean_absolute_error
 
-# --- 1. Попередня обробка та Feature Engineering ---
-print("Підготовка даних...")
 
-# Логарифмування вхідних числових фічей (Дуже важливо для фінансів!)
-# Шукаємо стовпчики, схожі на гроші (можна задати список вручну)
-money_cols = ['REVENUE_CUR', 'REVENUE_PREV', 'CASH_CURR', 'NB_EMPL'] # Додайте свої
-for col in money_cols:
-    if col in df.columns:
-        # log1p(x) = log(x + 1) - безпечно для нулів
-        df[f'{col}_LOG'] = np.log1p(df[col].clip(lower=0)) 
+# -----------------------------
+# 1) Helpers: auto-detect columns
+# -----------------------------
+RATIO_PAT = re.compile(r"(RATIO|MARGIN|SHARE|PCT|PERCENT|%|_NORM$|_NORM_|_RATE$|_RATE_|_IDX$|_INDEX$)", re.IGNORECASE)
+DIFF_PAT  = re.compile(r"(_DIF$|_DIFF$|DIF_|DIFF_|DELTA|CHANGE|CHG)", re.IGNORECASE)
+PREV_PAT  = re.compile(r"(_PREV$|_PRV$|PREV_|PRV_|PREVIOUS)", re.IGNORECASE)
+IDLIKE_PAT = re.compile(r"(ID$|_ID$|CODE$|_CODE$|KVED|OPCD|EDRPOU|TAX|IBAN|ACCOUNT|ACC|MASK)", re.IGNORECASE)
+COUNTLIKE_PAT = re.compile(r"(NB_|NUM_|N_|COUNT|CNT|QTY|EMP|EMPL|STAFF)", re.IGNORECASE)
 
-# Створення нових фічей (Ratios)
-if 'CASH_CURR' in df.columns and 'REVENUE_CUR' in df.columns:
-    # Яка частка кешу від доходу?
-    df['CASH_TO_REVENUE'] = df['CASH_CURR'] / (df['REVENUE_CUR'] + 1)
 
-# Категоріальні змінні
-cat_features = [c for c in df.columns if df[c].dtype.name in ['category', 'object']]
-for c in cat_features:
-    df[c] = df[c].astype('category')
+def is_binary_series(s: pd.Series) -> bool:
+    # allow NaN-free binary
+    vals = pd.unique(s)
+    return len(vals) <= 2 and set(vals).issubset({0, 1})
 
-# --- 2. Розбиття даних (Correct Split) ---
-THRESHOLD = 1000
-TARGET_COL = 'CURR_ACC'
 
-X = df.drop(columns=[TARGET_COL])
-y = df[TARGET_COL].clip(lower=0)
+def heavy_tail_flag(s: pd.Series) -> bool:
+    # robust heavy-tail test: huge skew between 99% and 50% OR mean >> median
+    q50 = s.quantile(0.50)
+    q99 = s.quantile(0.99)
+    mean = s.mean()
+    # avoid division by zero
+    denom = abs(q50) + 1e-9
+    return (abs(q99) / denom > 50) or (abs(mean) / (abs(q50) + 1e-9) > 20)
 
-# Створюємо бінарний таргет для стратифікації
-y_class = (y > THRESHOLD).astype(int)
 
-# 1. Відрізаємо Тест (Holdout) - його НЕ ЧІПАЄМО до фінального звіту
-X_temp, X_test, y_temp, y_test, y_cls_temp, y_cls_test = train_test_split(
-    X, y, y_class, test_size=0.2, random_state=42, stratify=y_class
-)
+def detect_feature_groups(df: pd.DataFrame, target_col: str):
+    cols = [c for c in df.columns if c != target_col]
 
-# 2. Розбиваємо залишок на Train та Validation (для відбору фічей та тюнінгу)
-X_train, X_val, y_train, y_val, y_cls_train, y_cls_val = train_test_split(
-    X_temp, y_temp, y_cls_temp, test_size=0.25, random_state=42, stratify=y_cls_temp
-) 
-# (0.25 від 80% = 20% загальної вибірки. Разом: 60% Train, 20% Val, 20% Test)
+    # categorical: existing category/object + id-like columns with low-ish cardinality
+    cat_cols = []
+    for c in cols:
+        if pd.api.types.is_object_dtype(df[c]) or str(df[c].dtype) == "category":
+            cat_cols.append(c)
+            continue
 
-# --- 3. Підготовка для Регресії (Log Target) ---
-# Навчаємо регресію тільки на "платниках" (y > 0 або > THRESHOLD)
-mask_vip_train = y_cls_train == 1
-mask_vip_val   = y_cls_val == 1
+        # treat code-like ints as categorical if not too many uniques
+        if IDLIKE_PAT.search(c) and pd.api.types.is_numeric_dtype(df[c]):
+            nun = df[c].nunique(dropna=False)
+            if nun <= 5000:  # safe threshold for 31k rows
+                cat_cols.append(c)
 
-X_train_reg = X_train[mask_vip_train]
-y_train_reg_log = np.log1p(y_train[mask_vip_train])
+    # numeric candidates
+    num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c]) and c not in cat_cols]
 
-X_val_reg = X_val[mask_vip_val]
-y_val_reg_log = np.log1p(y_val[mask_vip_val])
+    # name-based groups
+    diff_cols = [c for c in num_cols if DIFF_PAT.search(c)]
+    prev_cols = [c for c in num_cols if PREV_PAT.search(c)]
 
-# --- 4. Відбір фічей (на Validation сеті!) ---
-print("\nВідбір корисних фічей (Permutation Importance)...")
+    ratio_cols = [c for c in num_cols if RATIO_PAT.search(c)]  # keep as-is
+    bin_cols = [c for c in num_cols if is_binary_series(df[c])]  # keep as-is
 
-temp_reg = lgb.LGBMRegressor(n_estimators=100, random_state=42, verbose=-1)
-temp_reg.fit(X_train_reg, y_train_reg_log, categorical_feature=cat_features)
+    # count-like: integer dtypes or name pattern, excluding binary and ratio/diff/prev
+    count_cols = []
+    for c in num_cols:
+        if c in bin_cols or c in ratio_cols or c in diff_cols or c in prev_cols:
+            continue
+        if pd.api.types.is_integer_dtype(df[c]) or COUNTLIKE_PAT.search(c):
+            # but avoid treating huge-cardinality continuous ints as counts
+            nun = df[c].nunique()
+            if nun <= 20000:
+                count_cols.append(c)
 
-# ВАЖЛИВО: Рахуємо важливість на X_val, а не на X_test!
-perm_result = permutation_importance(
-    temp_reg, X_val_reg, y_val_reg_log,
-    n_repeats=5, random_state=42, n_jobs=-1
-)
+    # scale-like: remaining numeric columns (excluding diff/prev/ratio/binary/count)
+    rest = [c for c in num_cols if c not in set(diff_cols + prev_cols + ratio_cols + bin_cols + count_cols)]
+    # choose scale columns as heavy-tail among rest
+    scale_cols = [c for c in rest if heavy_tail_flag(df[c])]
 
-importance_df = pd.DataFrame({'feature': X.columns, 'importance': perm_result.importances_mean})
-# Беремо тільки ті, що реально покращують метрику (> 0)
-USEFUL_FEATURES = importance_df[importance_df['importance'] > 0]['feature'].tolist()
+    # Anything left in rest but not scale -> "other_numeric" keep as-is (trees handle it)
+    other_numeric = [c for c in rest if c not in scale_cols]
 
-print(f"Знайдено корисних фічей: {len(USEFUL_FEATURES)} із {len(X.columns)}")
-print(f"ТОП-5: {USEFUL_FEATURES[:5]}")
+    # final cleanup: remove target if mistakenly added
+    for lst in (cat_cols, num_cols, diff_cols, prev_cols, ratio_cols, bin_cols, count_cols, scale_cols, other_numeric):
+        if target_col in lst:
+            lst.remove(target_col)
 
-# Якщо список порожній (рідко, але буває)
-if not USEFUL_FEATURES:
-    USEFUL_FEATURES = X.columns.tolist()
+    # ensure unique
+    cat_cols = list(dict.fromkeys(cat_cols))
 
-# Оновлюємо список категоріальних фічей (тільки ті, що лишилися)
-cat_features_opt = [c for c in USEFUL_FEATURES if c in cat_features]
+    return {
+        "cat_cols": cat_cols,
+        "diff_cols": diff_cols,
+        "prev_cols": prev_cols,
+        "ratio_cols": ratio_cols,
+        "bin_cols": bin_cols,
+        "count_cols": count_cols,
+        "scale_cols": scale_cols,
+        "other_numeric": other_numeric,
+        "num_cols": num_cols,
+    }
 
-# --- 5. Навчання Фінальних Моделей ---
-print("\nНавчання фінальних моделей...")
 
-# Класифікатор (можна на всіх фічах, або теж на USEFUL)
-clf = lgb.LGBMClassifier(
-    n_estimators=500, learning_rate=0.03, num_leaves=31,
-    class_weight='balanced', random_state=42, verbose=-1
-)
-clf.fit(X_train, y_cls_train, categorical_feature=cat_features, 
-        eval_set=[(X_val, y_cls_val)], callbacks=[lgb.early_stopping(50)])
+def signed_log1p(x):
+    return np.sign(x) * np.log1p(np.abs(x))
 
-# Регресор (Тільки на корисних фічах)
-reg = lgb.LGBMRegressor(
-    n_estimators=500, learning_rate=0.05, num_leaves=31,
-    objective='regression_l1', # Спробуйте L1 (MAE) або 'tweedie'
-    random_state=42, verbose=-1
-)
-reg.fit(
-    X_train_reg[USEFUL_FEATURES], 
-    y_train_reg_log,
-    categorical_feature=cat_features_opt,
-    eval_set=[(X_val_reg[USEFUL_FEATURES], y_val_reg_log)],
-    callbacks=[lgb.early_stopping(50)]
-)
 
-print("\nГотово! Тепер можна перевіряти на X_test.")
+# -----------------------------
+# 2) Pipeline: prep -> train -> MAE
+# -----------------------------
+def train_lgbm_pipeline(df: pd.DataFrame, target_col: str, min_target: float = 100.0, test_size: float = 0.2):
+    df = df.copy()
+
+    # trim as you decided
+    df = df[df[target_col] > min_target].copy()
+
+    # target in log space (MAE evaluated after inverse)
+    y = np.log1p(df[target_col])
+
+    groups = detect_feature_groups(df, target_col=target_col)
+
+    # set categorical dtype
+    for c in groups["cat_cols"]:
+        df[c] = df[c].astype("category")
+
+    # create transformed features
+    created = []
+
+    # scale -> log1p (clip to >=0)
+    for c in groups["scale_cols"]:
+        newc = f"{c}__log"
+        df[newc] = np.log1p(df[c].clip(lower=0))
+        created.append(newc)
+
+    # diffs -> signed log
+    for c in groups["diff_cols"]:
+        newc = f"{c}__slog"
+        df[newc] = signed_log1p(df[c])
+        created.append(newc)
+
+    # counts -> log1p (optional but usually good)
+    for c in groups["count_cols"]:
+        newc = f"{c}__log"
+        df[newc] = np.log1p(df[c].clip(lower=0))
+        created.append(newc)
+
+    # drop prev cols (soft dedup)
+    df.drop(columns=groups["prev_cols"], inplace=True, errors="ignore")
+
+    # optionally drop raw versions of transformed cols to reduce collinearity/noise
+    df.drop(columns=groups["scale_cols"] + groups["diff_cols"] + groups["count_cols"], inplace=True, errors="ignore")
+
+    # assemble final feature list
+    features = (
+        created
+        + groups["ratio_cols"]
+        + groups["bin_cols"]
+        + groups["other_numeric"]
+        + groups["cat_cols"]
+    )
+
+    # remove any missing features due to drops
+    features = [c for c in features if c in df.columns]
+
+    X = df[features]
+    y = y.loc[X.index]
+
+    X_train, X_valid, y_train, y_valid = train_test_split(
+        X, y, test_size=test_size, random_state=42
+    )
+
+    model = LGBMRegressor(
+        objective="regression_l1",
+        n_estimators=2000,
+        learning_rate=0.03,
+        num_leaves=64,
+        min_child_samples=200,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42
+    )
+
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_valid, y_valid)],
+        eval_metric="mae",
+        categorical_feature=groups["cat_cols"],
+        verbose=100
+    )
+
+    # MAE in original space
+    y_pred = np.expm1(model.predict(X_valid))
+    y_true = np.expm1(y_valid)
+    mae = mean_absolute_error(y_true, y_pred)
+
+    return model, groups, features, mae
+
+
+# -----------------------------
+# 3) Usage
+# -----------------------------
+target_col = "CURR_ACC"
+model, groups, features, mae = train_lgbm_pipeline(df, target_col=target_col, min_target=100.0)
+
+print("MAE:", mae)
+print("\nDetected groups:")
+for k, v in groups.items():
+    if isinstance(v, list):
+        print(f"{k}: {len(v)}")
