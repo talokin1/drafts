@@ -1,17 +1,34 @@
-В майбутньому — так, мені було б цікаво виступити, але коли рішення буде в правильній стадії зрілості.
+Objective
 
-Ідея така:
-коли ми повністю автоматизуємо наші скорінги та аналітичні процеси і винесемо їх на інфраструктуру (Azure), це стане масштабованим продуктом, який:
+Identify non-OTP legal entities with transaction activity and business potential.
 
-знімає значний обсяг ручної роботи з бізнес-підрозділів
+Key signals
 
-зменшує операційні ризики та залежність від людського фактору
+• Employees (NB_EMPL)
+• Engagement score (PRIMARY_SCORE)
+• Expected income (INCOME, SAP)
 
-створює сталу залежність бізнесу від аналітики нашої команди, а не від разових ініціатив
+Use case
 
-підвищує видимість, репутацію та вплив команди на рівні всього банку
+Targeted ZKP offering to high-potential non-clients.
 
-Окремо — коли буде готова AI-модель аналізу контексту призначень платежів, ми фактично вийдемо на новий рівень аналітики:
-це не просто звіти, а інсайти з транзакційного тексту, які дають бізнес-ефект (наприклад, детекція еквайрингу, поведінкові патерни, нові джерела доходу).
+⬜ ПРАВА ЧАСТИНА (≈65%)
+Client funnel
 
-Тоді це буде не “технічна демонстрація”, а чіткий бізнес-кейс для всього банку, який логічно і правильно показувати на Demo Day.
+k companies → 7 potentially involved
+
+Applied filters
+
+• NB_EMPL > 1
+• PRIMARY_SCORE > 25%
+• INCOME > UAH
+
+Engagement segmentation
+
+High:  clients ·  avg
+Medium:  clients · k UAH avg
+Low:  clients ·k UAH avg
+
+Result (1 рядок, жирним)
+
+~ prioritized targets for ZKP outreach
