@@ -1,50 +1,74 @@
-cmp = (
-    df_nov[['CONTRAGENTID','TOTAL_SCORE',
-            'BUSINESS_SCORE','PORTFOLIO_SCORE','DAILY_SCORE']]
-    .merge(
-        df_mar[['CONTRAGENTID','TOTAL_SCORE',
-                'BUSINESS_SCORE','PORTFOLIO_SCORE','DAILY_SCORE']],
-        on='CONTRAGENTID',
-        suffixes=('_NOV','_MAR')
+def top_drivers(df_nov, df_mar, cols, prefix, n=3):
+    delta = (
+        df_mar[['CONTRAGENTID'] + cols]
+        .set_index('CONTRAGENTID')
+        - df_nov[['CONTRAGENTID'] + cols]
+          .set_index('CONTRAGENTID')
     )
+    delta.columns = [f"{prefix}_{c}" for c in delta.columns]
+    return delta.reset_index()
+
+business_delta = top_drivers(
+    df_nov, df_mar,
+    BUSINESS_COLS,
+    prefix='BUSINESS'
 )
 
-for col in ['TOTAL_SCORE','BUSINESS_SCORE','PORTFOLIO_SCORE','DAILY_SCORE']:
-    cmp[f'DELTA_{col}'] = cmp[f'{col}_MAR'] - cmp[f'{col}_NOV']
+portfolio_delta = top_drivers(
+    df_nov, df_mar,
+    PORTFOLIO_COLS,
+    prefix='PORTFOLIO'
+)
+
+daily_delta = top_drivers(
+    df_nov, df_mar,
+    DAILY_COLS,
+    prefix='DAILY'
+)
 
 
-def growth_driver(row):
-    deltas = {
-        'BUSINESS'  : row['DELTA_BUSINESS_SCORE'],
-        'PORTFOLIO' : row['DELTA_PORTFOLIO_SCORE'],
-        'DAILY'     : row['DELTA_DAILY_SCORE'],
-    }
-    return max(deltas, key=deltas.get)
-cmp['MAIN_GROWTH_DRIVER'] = cmp.apply(growth_driver, axis=1)
-
-
-
-daily_delta = (
-    df_mar[['CONTRAGENTID'] + DAILY_COLS]
-    .set_index('CONTRAGENTID')
-    - df_nov[['CONTRAGENTID'] + DAILY_COLS]
-      .set_index('CONTRAGENTID')
-).reset_index()
-
-def top_daily_drivers(row, n=3):
-    s = row[DAILY_COLS]
+def extract_top_features(row, cols, n=3):
+    s = row[cols]
+    s = s[s > 0]           # тільки ті, що реально дали ріст
     return list(s.sort_values(ascending=False).head(n).index)
 
-daily_delta['TOP_DAILY_DRIVERS'] = daily_delta.apply(top_daily_drivers, axis=1)
 
+cmp = cmp.merge(business_delta, on='CONTRAGENTID')
+cmp = cmp.merge(portfolio_delta, on='CONTRAGENTID')
+cmp = cmp.merge(daily_delta, on='CONTRAGENTID')
 
-
-
-final = (
-    cmp.merge(
-        daily_delta[['CONTRAGENTID','TOP_DAILY_DRIVERS']],
-        on='CONTRAGENTID',
-        how='left'
-    )
-    .sort_values('DELTA_TOTAL_SCORE', ascending=False)
+cmp['TOP_BUSINESS_DRIVERS'] = cmp.apply(
+    extract_top_features,
+    axis=1,
+    cols=[c for c in cmp.columns if c.startswith('BUSINESS_B')],
 )
+
+cmp['TOP_PORTFOLIO_DRIVERS'] = cmp.apply(
+    extract_top_features,
+    axis=1,
+    cols=[c for c in cmp.columns if c.startswith('PORTFOLIO_P')],
+)
+
+cmp['TOP_DAILY_DRIVERS'] = cmp.apply(
+    extract_top_features,
+    axis=1,
+    cols=[c for c in cmp.columns if c.startswith('DAILY_D')],
+)
+
+
+def explain_growth(row):
+    drivers = {
+        'BUSINESS': row['DELTA_BUSINESS_SCORE'],
+        'PORTFOLIO': row['DELTA_PORTFOLIO_SCORE'],
+        'DAILY': row['DELTA_DAILY_SCORE']
+    }
+
+    main_block = max(drivers, key=drivers.get)
+
+    if main_block == 'BUSINESS':
+        return f"BUSINESS: {row['TOP_BUSINESS_DRIVERS']}"
+    if main_block == 'PORTFOLIO':
+        return f"PORTFOLIO: {row['TOP_PORTFOLIO_DRIVERS']}"
+    return f"DAILY: {row['TOP_DAILY_DRIVERS']}"
+
+cmp['GROWTH_EXPLANATION'] = cmp.apply(explain_growth, axis=1)
