@@ -1,67 +1,53 @@
-def extract_articles(df, block, col, mapping):
+cluster_block_summary = (
+    final_summary
+    .groupby("Кластер", as_index=False)
+    .agg(
+        clients_cnt = ("CONTRAGENTID", "count"),
+        avg_delta_total = ("DELTA_TOTAL_SCORE", "mean"),
+        avg_delta_business = ("DELTA_BUSINESS_SCORE", "mean"),
+        avg_delta_portfolio = ("DELTA_PORTFOLIO_SCORE", "mean"),
+        avg_delta_daily = ("DELTA_DAILY_SCORE", "mean"),
+    )
+)
+
+for col in ["business", "portfolio", "daily"]:
+    cluster_block_summary[f"share_{col}"] = (
+        cluster_block_summary[f"avg_delta_{col}"]
+        / cluster_block_summary["avg_delta_total"]
+    )
+
+
+cluster_main_driver = (
+    final_summary
+    .groupby(["Кластер", "MAIN_GROWTH_DRIVER"])
+    .size()
+    .reset_index(name="clients_cnt")
+)
+cluster_main_driver["share"] = (
+    cluster_main_driver
+    .groupby("Кластер")["clients_cnt"]
+    .transform(lambda x: x / x.sum())
+)
+
+
+def explode_drivers(df, cluster_col, drivers_col, block_name):
     tmp = (
-        df[df['GROWTH_BLOCK'] == block]
-        .explode(col)
-        .dropna(subset=[col])
+        df[[cluster_col, drivers_col]]
+        .dropna()
+        .explode(drivers_col)
     )
-
-    return (
-        tmp
-        .groupby(['CLUSTER', col])
-        .size()
-        .reset_index(name='cnt')
-        .assign(
-            article=lambda x: x[col].map(mapping)
-        )
-        .sort_values(['CLUSTER','cnt'], ascending=[True, False])
-    )
-
-
-business_articles = extract_articles(
-    cmp,
-    block='Business',
-    col='TOP_BUSINESS_DRIVERS',
-    mapping=BUSINESS_MAP
+    tmp["BLOCK"] = block_name
+    tmp.rename(columns={drivers_col: "FEATURE"}, inplace=True)
+    return tmp
+drivers_long = pd.concat([
+    explode_drivers(final_summary, "Кластер", "TOP_BUSINESS_DRIVERS", "BUSINESS"),
+    explode_drivers(final_summary, "Кластер", "TOP_PORTFOLIO_DRIVERS", "PORTFOLIO"),
+    explode_drivers(final_summary, "Кластер", "TOP_DAILY_DRIVERS", "DAILY"),
+])
+cluster_feature_impact = (
+    drivers_long
+    .groupby(["Кластер", "BLOCK", "FEATURE"])
+    .size()
+    .reset_index(name="cnt")
+    .sort_values(["Кластер", "BLOCK", "cnt"], ascending=[True, True, False])
 )
-
-portfolio_articles = extract_articles(
-    cmp,
-    block='Portfolio',
-    col='TOP_PORTFOLIO_DRIVERS',
-    mapping=PORTFOLIO_MAP
-)
-
-daily_articles = extract_articles(
-    cmp,
-    block='Daily banking',
-    col='TOP_DAILY_DRIVERS',
-    mapping=DAILY_MAP
-)
-
-business_insights = (
-    business_articles
-    .groupby('CLUSTER')
-    .head(3)
-    [['CLUSTER','article','cnt']]
-)
-
-portfolio_insights = (
-    portfolio_articles
-    .groupby('CLUSTER')
-    .head(3)
-    [['CLUSTER','article','cnt']]
-)
-
-daily_insights = (
-    daily_articles
-    .groupby('CLUSTER')
-    .head(3)
-    [['CLUSTER','article','cnt']]
-)
-
-
-cluster_articles_summary = {
-    'Business': business_insights,
-    'Portfolio': portfolio_insights,
-    'Daily banking': daily_insights
-}
