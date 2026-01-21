@@ -1,31 +1,81 @@
-cmp['GROWTH_BLOCK'] = cmp['GROWTH_EXPLANATION_HUMAN'].str.split(':').str[0]
+cluster_growth = (
+    cmp
+    .groupby('CLUSTER')
+    .agg(
+        n_clients=('CONTRAGENTID', 'count'),
+        total_growth=('DELTA_TOTAL_SCORE', 'sum'),
+        avg_growth=('DELTA_TOTAL_SCORE', 'mean'),
+        median_growth=('DELTA_TOTAL_SCORE', 'median')
+    )
+    .sort_values('total_growth', ascending=False)
+)
 
-cmp['GROWTH_FACTORS_RAW'] = (
-    cmp['GROWTH_EXPLANATION_HUMAN']
-    .str.split(':', n=1)
-    .str[1]
-    .str.strip()
+cluster_block_driver = (
+    cmp
+    .groupby(['CLUSTER', 'GROWTH_BLOCK'])
+    .size()
+    .reset_index(name='cnt')
+)
+cluster_block_share = (
+    cluster_block_driver
+    .assign(
+        share=lambda x: x['cnt'] /
+        x.groupby('CLUSTER')['cnt'].transform('sum')
+    )
+    .sort_values(['CLUSTER','share'], ascending=[True, False])
+)
+
+
+factor_exploded = (
+    cmp
+    .explode('GROWTH_FACTORS')
+    .dropna(subset=['GROWTH_FACTORS'])
+)
+
+cluster_factor_top = (
+    factor_exploded
+    .groupby(['CLUSTER', 'GROWTH_FACTORS'])
+    .size()
+    .reset_index(name='cnt')
+    .sort_values(['CLUSTER','cnt'], ascending=[True, False])
+)
+
+top_factors_per_cluster = (
+    cluster_factor_top
+    .groupby('CLUSTER')
 )
 
 
 
-import ast
+def build_cluster_insight(df):
+    return (
+        df
+        .groupby('CLUSTER')
+        .apply(lambda x:
+            "; ".join(
+                x['GROWTH_FACTORS'].value_counts().head(3).index
+            )
+        )
+        .reset_index(name='KEY_GROWTH_DRIVERS')
+    )
+cluster_insights = build_cluster_insight(factor_exploded)
 
-cmp['GROWTH_FACTORS'] = cmp['GROWTH_FACTORS_RAW'].apply(
-    lambda x: ast.literal_eval(x) if isinstance(x, str) else []
-)
-cmp['N_GROWTH_FACTORS'] = cmp['GROWTH_FACTORS'].apply(len)
-cmp['MAIN_GROWTH_FACTOR'] = cmp['GROWTH_FACTORS'].apply(
-    lambda x: x[0] if x else None
-)
-cmp['SECOND_GROWTH_FACTOR'] = cmp['GROWTH_FACTORS'].apply(
-    lambda x: x[1] if len(x) > 1 else None
-)
-cmp.explode('GROWTH_FACTORS')['GROWTH_FACTORS'].value_counts().head(10)
 
-cmp['GROWTH_BLOCK'].value_counts(normalize=True)
 
-cmp.explode('GROWTH_FACTORS') \
-   .groupby(['CLUSTER','GROWTH_FACTORS']) \
-   .size() \
-   .sort_values(ascending=False)
+cluster_summary = (
+    cluster_growth
+    .reset_index()
+    .merge(
+        cluster_block_share
+        .groupby('CLUSTER')
+        .first()
+        .reset_index()[['CLUSTER','GROWTH_BLOCK','share']],
+        on='CLUSTER',
+        how='left'
+    )
+    .merge(
+        cluster_insights,
+        on='CLUSTER',
+        how='left'
+    )
+)
