@@ -1,81 +1,67 @@
-cluster_growth = (
-    cmp
-    .groupby('CLUSTER')
-    .agg(
-        n_clients=('CONTRAGENTID', 'count'),
-        total_growth=('DELTA_TOTAL_SCORE', 'sum'),
-        avg_growth=('DELTA_TOTAL_SCORE', 'mean'),
-        median_growth=('DELTA_TOTAL_SCORE', 'median')
+def extract_articles(df, block, col, mapping):
+    tmp = (
+        df[df['GROWTH_BLOCK'] == block]
+        .explode(col)
+        .dropna(subset=[col])
     )
-    .sort_values('total_growth', ascending=False)
-)
 
-cluster_block_driver = (
-    cmp
-    .groupby(['CLUSTER', 'GROWTH_BLOCK'])
-    .size()
-    .reset_index(name='cnt')
-)
-cluster_block_share = (
-    cluster_block_driver
-    .assign(
-        share=lambda x: x['cnt'] /
-        x.groupby('CLUSTER')['cnt'].transform('sum')
-    )
-    .sort_values(['CLUSTER','share'], ascending=[True, False])
-)
-
-
-factor_exploded = (
-    cmp
-    .explode('GROWTH_FACTORS')
-    .dropna(subset=['GROWTH_FACTORS'])
-)
-
-cluster_factor_top = (
-    factor_exploded
-    .groupby(['CLUSTER', 'GROWTH_FACTORS'])
-    .size()
-    .reset_index(name='cnt')
-    .sort_values(['CLUSTER','cnt'], ascending=[True, False])
-)
-
-top_factors_per_cluster = (
-    cluster_factor_top
-    .groupby('CLUSTER')
-)
-
-
-
-def build_cluster_insight(df):
     return (
-        df
-        .groupby('CLUSTER')
-        .apply(lambda x:
-            "; ".join(
-                x['GROWTH_FACTORS'].value_counts().head(3).index
-            )
+        tmp
+        .groupby(['CLUSTER', col])
+        .size()
+        .reset_index(name='cnt')
+        .assign(
+            article=lambda x: x[col].map(mapping)
         )
-        .reset_index(name='KEY_GROWTH_DRIVERS')
+        .sort_values(['CLUSTER','cnt'], ascending=[True, False])
     )
-cluster_insights = build_cluster_insight(factor_exploded)
 
 
-
-cluster_summary = (
-    cluster_growth
-    .reset_index()
-    .merge(
-        cluster_block_share
-        .groupby('CLUSTER')
-        .first()
-        .reset_index()[['CLUSTER','GROWTH_BLOCK','share']],
-        on='CLUSTER',
-        how='left'
-    )
-    .merge(
-        cluster_insights,
-        on='CLUSTER',
-        how='left'
-    )
+business_articles = extract_articles(
+    cmp,
+    block='Business',
+    col='TOP_BUSINESS_DRIVERS',
+    mapping=BUSINESS_MAP
 )
+
+portfolio_articles = extract_articles(
+    cmp,
+    block='Portfolio',
+    col='TOP_PORTFOLIO_DRIVERS',
+    mapping=PORTFOLIO_MAP
+)
+
+daily_articles = extract_articles(
+    cmp,
+    block='Daily banking',
+    col='TOP_DAILY_DRIVERS',
+    mapping=DAILY_MAP
+)
+
+business_insights = (
+    business_articles
+    .groupby('CLUSTER')
+    .head(3)
+    [['CLUSTER','article','cnt']]
+)
+
+portfolio_insights = (
+    portfolio_articles
+    .groupby('CLUSTER')
+    .head(3)
+    [['CLUSTER','article','cnt']]
+)
+
+daily_insights = (
+    daily_articles
+    .groupby('CLUSTER')
+    .head(3)
+    [['CLUSTER','article','cnt']]
+)
+
+
+cluster_articles_summary = {
+    'Business': business_insights,
+    'Portfolio': portfolio_insights,
+    'Daily banking': daily_insights
+}
