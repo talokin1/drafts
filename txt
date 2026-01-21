@@ -1,34 +1,29 @@
-Objective
+Business context
 
-Identify non-OTP legal entities with transaction activity and business potential.
+У рамках спільної роботи з командою Андрія Креденцера було переглянуто підхід до виявлення еквайрингових клієнтів.
+Фокус зміщено з окремих технічних ознак на реальні платіжні патерни еквайрингу.
 
-Key signals
+What was done
 
-• Employees (NB_EMPL)
-• Engagement score (PRIMARY_SCORE)
-• Expected income (INCOME, SAP)
+1. Розширено патерни пошуку еквайрингу
 
-Use case
+Патерни еквайрингових операцій масштабовано на всі рахунки, а не лише на 2924
 
-Targeted ZKP offering to high-potential non-clients.
+Враховано:
 
-⬜ ПРАВА ЧАСТИНА (≈65%)
-Client funnel
+структуру транзакцій
 
-k companies → 7 potentially involved
+призначення платежу
 
-Applied filters
+рахунки та назви контрагентів
 
-• NB_EMPL > 1
-• PRIMARY_SCORE > 25%
-• INCOME > UAH
+Результат за 1 місяць:
 
-Engagement segmentation
+~ потенційних еквайрингових клієнтів
 
-High:  clients ·  avg
-Medium:  clients · k UAH avg
-Low:  clients ·k UAH avg
+млрд грн обороту
 
-Result (1 рядок, жирним)
+ еквайрингових транзакцій
 
-~ prioritized targets for ZKP outreach
+Business activation
+
