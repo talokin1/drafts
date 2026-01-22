@@ -1,24 +1,34 @@
-FEATURE_MAP = {}
-FEATURE_MAP.update(BUSINESS_MAP)
-FEATURE_MAP.update(PORTFOLIO_MAP)
-FEATURE_MAP.update(DAILY_MAP)
-
 import re
+import unicodedata
 
-VALID_FEATURE_RE = re.compile(r'^(BUSINESS_B\d+|PORTFOLIO_P\d+|DAILY_D\d+)$')
+_APOS_RE = re.compile(r"[’ʻʼ`´]")
+_DASH_RE = re.compile(r"[‐-–—−]")
 
-cluster_feature_impact = cluster_feature_impact[
-    cluster_feature_impact['FEATURE'].str.match(VALID_FEATURE_RE)
-].copy()
+def norm_ua(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKC", s)
+    s = s.lower()
 
-def decode_feature(feature, mapping):
-    return mapping.get(feature, feature)
+    # уніфікуємо апострофи
+    s = _APOS_RE.sub("'", s)
 
-cluster_feature_impact['FEATURE_TXT'] = cluster_feature_impact['FEATURE'].apply(
-    lambda x: decode_feature(x, FEATURE_MAP)
-)
-cluster_feature_impact = (
-    cluster_feature_impact
-    .sort_values(['Кластер','cnt'], ascending=[True, False])
-    [['Кластер','BLOCK','FEATURE','FEATURE_TXT','cnt']]
-)
+    # уніфікуємо тире/дефіси
+    s = _DASH_RE.sub("-", s)
+
+    # прибираємо лапки типу «»
+    s = re.sub(r"[«»\"“”]", " ", s)
+
+    # схлопуємо пробіли
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+opf_ref["OPF_NAME_NORM"] = opf_ref["OPF_NAME"].map(norm_ua)
+df["FULL_NAME_NORM"] = df["Повна назва"].map(norm_ua)
+
+opf_ref = opf_ref.sort_values("OPF_NAME_NORM", key=lambda s: s.str.len(), ascending=False)
+
+a = norm_ua("Адвокатське об’єднання")   # з excel (часто тут ’)
+b = norm_ua("АДВОКАТСЬКЕ ОБ'ЄДНАННЯ")   # з FULL_NAME
+print(a, b, a == b)
