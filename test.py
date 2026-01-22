@@ -1,40 +1,19 @@
-MAP_MARKERS = {
+def extract_opf(full_name_norm: str):
+    # ---------- LEVEL 1: exact ----------
+    for _, r in opf_ref_exact.iterrows():
+        if full_name_norm.startswith(r["OPF_NAME_NORM"]):
+            return r["OPF_CODE"], r["OPF_NAME"], "EXACT"
 
-    # 100 — Підприємства
-    100: r"\b(підприємств|приватн.*підпр|державн.*підпр|комунальн.*підпр|казенн|дочірн|фермерськ|фг\b)\b",
+    # ---------- LEVEL 2: marker-based ----------
+    for _, group in MAP_MARKERS.items():
+        for opf_code, pattern in group.items():
+            if re.search(pattern, full_name_norm):
+                name = opf_ref.loc[
+                    opf_ref["OPF_CODE_INT"] == opf_code, "OPF_NAME"
+                ].iloc[0]
+                return opf_code, name, "MARKER"
 
-    # 200 — Господарські товариства
-    200: r"\b(товариств|тзов\b|тов\b|акціонерн|зао\b|оао\b|пат\b|повн.*товар|командит)\b",
-
-    # 300 — Кооперативи
-    300: r"\b(кооператив|кооп|виробнич.*кооп|обслуговуюч.*кооп|житлов.*кооп|гаражн.*кооп)\b",
-
-    # 400 — Організації / установи / заклади
-    400: r"\b(організаці|установа|заклад|державн.*орган|комунальн.*орган|приватн.*орган)\b",
-
-    # 500 — Обʼєднання ЮО
-    500: r"\b(об.?єднан|асоціац|корпорац|консорціум|концерн)\b",
-
-    # 600 — Відокремлені підрозділи
-    600: r"\b(філія|представницт|відокремлен.*підрозділ)\b",
-
-    # 700 — Непідприємницькі
-    700: r"\b(непідприємницьк)\b",
-
-    # 800 — Громадські / профспілкові / релігійні
-    800: r"\b(громадськ|профспілк|профсоюз|релігійн|церкв|благодійн|парті)\b",
-
-    # 900 — Інші
-    900: r"\b(інш.*організаційн.*форм)\b",
-}
-
-for code, pattern in MAP_MARKERS.items():
-    if re.search(pattern, full_name_norm):
-        name = opf_ref_top.loc[
-            opf_ref_top["OPF_CODE_INT"] == code, "OPF_NAME"
-        ].iloc[0]
-        return code, name, "TOP_MARKER"
-
+    return None, None, "UNKNOWN"
 
 
 
