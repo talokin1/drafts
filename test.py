@@ -1,47 +1,100 @@
-with open("kved.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
+import pandas as pd
+import json
 
-kved_map = pd.DataFrame(data)
+# ==========================================
+# 1. Завантаження та очищення JSON
+# ==========================================
 
-kved_map = kved_map.rename(columns={
-    "Код секції": "SECTION",
-    "Код розділу \n": "DIVISION",
-    "Код групи \n": "GROUP",
-    "Код класу": "CLASS",
-    "Назва": "NAME"
-})
+# Замініть шлях на ваш файл
+file_path = 'kved.json' 
 
-def norm(x):
-    if not isinstance(x, str):
-        return ""
-    x = x.lower()
-    x = re.sub(r"[^\w\s]", " ", x)
-    x = re.sub(r"\s+", " ", x)
-    return x.strip()
-df["DESCR_NORM"] = df["KVED_DESCR"].apply(norm)
-kved_map["NAME_NORM"] = kved_map["NAME"].apply(norm)
+with open(file_path, 'r', encoding='utf-8') as f:
+    raw_data = json.load(f)
 
+# Функція для видалення \n та пробілів з ключів
+def clean_record(record):
+    return {k.strip(): v for k, v in record.items()}
 
-def match_meta(descr):
-    if not descr:
-        return None, None, None, None
+# Очищуємо всі записи
+data = [clean_record(row) for row in raw_data]
 
-    for _, row in kved_map.iterrows():
-        if row["NAME_NORM"] in descr or descr in row["NAME_NORM"]:
-            return (
-                row["SECTION"],
-                row["DIVISION"],
-                row["GROUP"],
-                row["CLASS"],
-            )
+# ==========================================
+# 2. Створення довідників (Lookups)
+# ==========================================
+# JSON містить окремі об'єкти для опису Секцій, Розділів та Груп.
+# Нам треба витягнути їх назви, щоб потім підставити до Класів.
 
-    return None, None, None, None
+sections_map = {}   # 'C' -> 'Переробна промисловість'
+divisions_map = {}  # '23' -> 'Виробництво іншої неметалевої...'
+groups_map = {}     # '23.1' -> 'Виробництво скла та виробів зі скла'
+kved_classes = []   # Сюди збережемо тільки кінцеві класи (23.11)
 
+for row in data:
+    # Логіка визначення рівня ієрархії за наявністю ключів
+    
+    # Це Клас (кінцевий рівень, який нам треба в таблиці)
+    if 'Код класу' in row:
+        kved_classes.append(row)
+        
+    # Це Група (наприклад 23.1) - зберігаємо назву
+    elif 'Код групи' in row:
+        groups_map[row['Код групи']] = row['Назва']
+        
+    # Це Розділ (наприклад 23) - зберігаємо назву
+    elif 'Код розділу' in row:
+        divisions_map[row['Код розділу']] = row['Назва']
+        
+    # Це Секція (наприклад C) - зберігаємо назву
+    elif 'Код секції' in row:
+        sections_map[row['Код секції']] = row['Назва']
 
-df[["SECTION", "DIVISION", "GROUP", "CLASS"]] = (
-    df["DESCR_NORM"]
-    .apply(match_meta)
-    .apply(pd.Series)
-)
+# ==========================================
+# 3. Збірка майстер-таблиці КВЕД
+# ==========================================
 
-df.drop(columns=["DESCR_NORM"], inplace=True)
+final_rows = []
+
+for item in kved_classes:
+    # Беремо коди з поточного запису класу
+    sec_code = item.get('Код секції')
+    div_code = item.get('Код розділу')
+    grp_code = item.get('Код групи')
+    class_code = item.get('Код класу')
+    
+    final_rows.append({
+        'KVED': class_code,  # Це поле буде ключем для мерджу
+        'KVED_Name': item['Назва'], # Назва самого класу (Виробництво листового скла)
+        
+        # Підтягуємо назви батьківських рівнів зі словників
+        'Group_Code': grp_code,
+        'Group_Name': groups_map.get(grp_code, ''),
+        
+        'Division_Code': div_code,
+        'Division_Name': divisions_map.get(div_code, ''),
+        
+        'Section_Code': sec_code,
+        'Section_Name': sections_map.get(sec_code, '')
+    })
+
+kved_reference_df = pd.DataFrame(final_rows)
+
+# ==========================================
+# 4. Мердж з вашою таблицею компаній
+# ==========================================
+
+# Припустимо, df_companies - це ваша існуюча таблиця
+# df_companies = pd.read_csv(...) або вже є в пам'яті
+
+# ВАЖЛИВО: Переконайтесь, що типи даних однакові (string)
+# Якщо в df_companies колонка називається інакше, змініть 'KVED' на вашу назву
+# kved_reference_df['KVED'] = kved_reference_df['KVED'].astype(str)
+
+# df_companies = df_companies.merge(
+#     kved_reference_df, 
+#     on='KVED', 
+#     how='left'
+# )
+
+# Результат:
+print("Приклад сформованого довідника:")
+display(kved_reference_df.head())
