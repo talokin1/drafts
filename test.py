@@ -1,29 +1,33 @@
-def normalize_kved(val):
-    if pd.isna(val):
-        return val
-    
-    # 1. Заміна коми та видалення зайвих пробілів
-    val_str = str(val).replace(',', '.').strip()
-    
-    # 2. Розбиваємо на частини "до крапки" і "після"
-    parts = val_str.split('.')
-    
-    # Частина 1 (Основна): Додаємо нуль зліва, якщо треба (1 -> 01)
-    major = parts[0].zfill(2)
-    
-    # Частина 2 (Дробова): Додаємо нуль СПРАВА, якщо треба (1 -> 10)
-    if len(parts) > 1:
-        # ljust(2, '0') доповнює рядок нулями справа до 2 символів
-        minor = parts[1].ljust(2, '0')
-        return f"{major}.{minor}"
-    else:
-        # Якщо крапки не було (наприклад, код "72")
-        # Якщо ви хочете перетворити "72" на "72.00", розкоментуйте рядок нижче:
-        # return f"{major}.00"
-        return major
+# 1. Нормалізація регістру в обох таблицях (приводимо до нижнього)
+# Використовуємо .astype(str), щоб уникнути помилок, але треба обережно з NaN
+final_df['FIRM_OPFNM'] = final_df['FIRM_OPFNM'].str.lower().str.strip()
+ubki['OPF'] = ubki['OPF'].str.lower().str.strip()
 
-# Застосовуємо до колонки
-fin_ind['KVED'] = fin_ind['KVED'].apply(normalize_kved)
+# 2. Підготовка даних з UBKI
+# Перейменуємо колонки, щоб при мерджі було зрозуміло, де дані з UBKI
+ubki_subset = ubki[['IDENTIFYCODE', 'OPF_CODE', 'OPF']].rename(columns={
+    'OPF_CODE': 'UBKI_OPF_CODE', 
+    'OPF': 'UBKI_OPF_NAME'
+})
 
-# Перевіряємо результат (тепер 81.1 та 81.10 зіллються в 81.10)
-print(fin_ind['KVED'].value_counts().head(10))
+# 3. Виконуємо Merge
+final_df = final_df.merge(ubki_subset, on='IDENTIFYCODE', how='left')
+
+# 4. Логіка заповнення (як з КВЕД)
+# Якщо в UBKI є код/назва — беремо їх. Якщо ні — залишаємо те, що було в final_df.
+
+# Оновлюємо КОД (OPF_CODE)
+final_df['FIRM_OPFCD'] = final_df['UBKI_OPF_CODE'].fillna(final_df['FIRM_OPFCD'])
+
+# Оновлюємо НАЗВУ (OPF_NAME)
+final_df['FIRM_OPFNM'] = final_df['UBKI_OPF_NAME'].fillna(final_df['FIRM_OPFNM'])
+
+# 5. Повертаємо велику літеру (Capitalize)
+# "товариство з обмеженою..." -> "Товариство з обмеженою..."
+final_df['FIRM_OPFNM'] = final_df['FIRM_OPFNM'].str.capitalize()
+
+# 6. Видаляємо тимчасові колонки з UBKI
+final_df = final_df.drop(columns=['UBKI_OPF_CODE', 'UBKI_OPF_NAME'])
+
+# Перевірка результату
+print(final_df[['IDENTIFYCODE', 'FIRM_OPFCD', 'FIRM_OPFNM']].head())
