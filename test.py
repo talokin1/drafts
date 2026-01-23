@@ -2,99 +2,104 @@ import pandas as pd
 import json
 
 # ==========================================
-# 1. Завантаження та очищення JSON
+# 1. Підготовка довідників з JSON
 # ==========================================
 
-# Замініть шлях на ваш файл
-file_path = 'kved.json' 
-
-with open(file_path, 'r', encoding='utf-8') as f:
+# Завантажуємо JSON
+with open('kved.json', 'r', encoding='utf-8') as f:
     raw_data = json.load(f)
 
-# Функція для видалення \n та пробілів з ключів
+# Функція очищення (прибираємо \n)
 def clean_record(record):
     return {k.strip(): v for k, v in record.items()}
 
-# Очищуємо всі записи
 data = [clean_record(row) for row in raw_data]
 
-# ==========================================
-# 2. Створення довідників (Lookups)
-# ==========================================
-# JSON містить окремі об'єкти для опису Секцій, Розділів та Груп.
-# Нам треба витягнути їх назви, щоб потім підставити до Класів.
+# Створюємо словники для кожного рівня ієрархії
+sections_name_map = {}   # 'A' -> 'Сільське господарство...'
+divisions_name_map = {}  # '01' -> 'Сільське господарство...'
+groups_name_map = {}     # '01.1' -> 'Вирощування...'
+classes_name_map = {}    # '01.11' -> 'Вирощування зернових...'
 
-sections_map = {}   # 'C' -> 'Переробна промисловість'
-divisions_map = {}  # '23' -> 'Виробництво іншої неметалевої...'
-groups_map = {}     # '23.1' -> 'Виробництво скла та виробів зі скла'
-kved_classes = []   # Сюди збережемо тільки кінцеві класи (23.11)
+# Додатковий словник: щоб знати, до якої Секції (літери) належить Розділ (цифри)
+# Наприклад: '01' -> 'A'
+division_to_section_code = {}
 
 for row in data:
-    # Логіка визначення рівня ієрархії за наявністю ключів
-    
-    # Це Клас (кінцевий рівень, який нам треба в таблиці)
-    if 'Код класу' in row:
-        kved_classes.append(row)
-        
-    # Це Група (наприклад 23.1) - зберігаємо назву
-    elif 'Код групи' in row:
-        groups_map[row['Код групи']] = row['Назва']
-        
-    # Це Розділ (наприклад 23) - зберігаємо назву
-    elif 'Код розділу' in row:
-        divisions_map[row['Код розділу']] = row['Назва']
-        
-    # Це Секція (наприклад C) - зберігаємо назву
-    elif 'Код секції' in row:
-        sections_map[row['Код секції']] = row['Назва']
+    sec_code = row.get('Код секції')
+    div_code = row.get('Код розділу')
+    grp_code = row.get('Код групи')
+    cls_code = row.get('Код класу')
+    name = row.get('Назва')
+
+    # Заповнюємо довідник Секцій
+    if sec_code and not div_code:
+        sections_name_map[sec_code] = name
+
+    # Заповнюємо довідник Розділів і зв'язок з Секцією
+    if div_code:
+        # Якщо це запис самого розділу (без групи)
+        if not grp_code:
+            divisions_name_map[div_code] = name
+        # Запам'ятовуємо, що цей розділ належить цій секції
+        if sec_code:
+            division_to_section_code[div_code] = sec_code
+
+    # Заповнюємо довідник Груп
+    if grp_code and not cls_code:
+        groups_name_map[grp_code] = name
+
+    # Заповнюємо довідник Класів
+    if cls_code:
+        classes_name_map[cls_code] = name
 
 # ==========================================
-# 3. Збірка майстер-таблиці КВЕД
+# 2. Обробка вашої таблиці (Enrichment)
 # ==========================================
 
-final_rows = []
+# Припустимо, це ваш DataFrame
+# companies_df = pd.read_csv(...) 
+# Для прикладу створимо df з проблемними кодами
+# companies_df = pd.DataFrame({'KVED': ['91.31', '74.13', '51.11', '01.11']})
 
-for item in kved_classes:
-    # Беремо коди з поточного запису класу
-    sec_code = item.get('Код секції')
-    div_code = item.get('Код розділу')
-    grp_code = item.get('Код групи')
-    class_code = item.get('Код класу')
-    
-    final_rows.append({
-        'KVED': class_code,  # Це поле буде ключем для мерджу
-        'KVED_Name': item['Назва'], # Назва самого класу (Виробництво листового скла)
-        
-        # Підтягуємо назви батьківських рівнів зі словників
-        'Group_Code': grp_code,
-        'Group_Name': groups_map.get(grp_code, ''),
-        
-        'Division_Code': div_code,
-        'Division_Name': divisions_map.get(div_code, ''),
-        
-        'Section_Code': sec_code,
-        'Section_Name': sections_map.get(sec_code, '')
-    })
+# 1. Переконуємося, що KVED - це рядок
+companies_df['KVED'] = companies_df['KVED'].astype(str).str.strip()
 
-kved_reference_df = pd.DataFrame(final_rows)
+# 2. Витягуємо компоненти коду з колонки KVED
+# Розділ - це завжди перші 2 символи (наприклад '91' з '91.31')
+companies_df['div_key'] = companies_df['KVED'].str[:2]
+
+# Група - це зазвичай перші 4 символи (наприклад '91.3' з '91.31')
+# Але треба бути обережним, якщо код короткий. Беремо до 4 символів.
+companies_df['group_key'] = companies_df['KVED'].str[:4]
+
+# 3. Мапимо назви (Lookup)
+# Шукаємо назву класу (точне співпадіння)
+companies_df['Class_Name'] = companies_df['KVED'].map(classes_name_map)
+
+# Шукаємо назву групи (за ключем 'XX.X')
+companies_df['Group_Name'] = companies_df['group_key'].map(groups_name_map)
+
+# Шукаємо назву розділу (за ключем 'XX')
+companies_df['Division_Name'] = companies_df['div_key'].map(divisions_name_map)
+
+# 4. Визначаємо Секцію (Літеру і Назву) через Розділ
+# Спочатку знаходимо код секції (A, B, C...) через код розділу
+companies_df['Section_Code'] = companies_df['div_key'].map(division_to_section_code)
+# Тепер знаходимо назву секції
+companies_df['Section_Name'] = companies_df['Section_Code'].map(sections_name_map)
 
 # ==========================================
-# 4. Мердж з вашою таблицею компаній
+# 5. Фінальна чистка
 # ==========================================
 
-# Припустимо, df_companies - це ваша існуюча таблиця
-# df_companies = pd.read_csv(...) або вже є в пам'яті
+# Видаляємо допоміжні ключі, якщо вони не потрібні
+final_df = companies_df.drop(columns=['div_key', 'group_key'])
 
-# ВАЖЛИВО: Переконайтесь, що типи даних однакові (string)
-# Якщо в df_companies колонка називається інакше, змініть 'KVED' на вашу назву
-# kved_reference_df['KVED'] = kved_reference_df['KVED'].astype(str)
+print("Результат обробки:")
+display(final_df.head())
 
-# df_companies = df_companies.merge(
-#     kved_reference_df, 
-#     on='KVED', 
-#     how='left'
-# )
-
-# Результат:
-print("Приклад сформованого довідника:")
-display(kved_reference_df.head())
+# Перевірка: скільки записів отримали хоча б назву Секції або Розділу
+filled_stats = final_df[['Section_Name', 'Division_Name', 'Group_Name', 'Class_Name']].notna().sum()
+print("\nСтатистика заповнення:")
+print(filled_stats)
