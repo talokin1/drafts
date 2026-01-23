@@ -1,23 +1,26 @@
-# --- 8. ВПОРЯДКУВАННЯ КОЛОНОК (Reorder) ---
-target_col = 'KVED_5_DESCR'
-cols_to_move = ['OPF_CODE', 'OPF_NAME']
+def clean_opf_code_final(val):
+    # Якщо значення пусте, повертаємо як є
+    if pd.isna(val) or val == "":
+        return val
+    
+    try:
+        # 1. Конвертуємо через float в int, щоб гарантовано прибрати ".0"
+        # Це працює і для числа 220.0, і для рядка "220.0"
+        int_val = int(float(val))
+        
+        # 2. Якщо це 0 (який часто означає "немає даних"),
+        # ви можете або залишити його '0000', або повернути None.
+        # Зараз робимо 0000 згідно з вашим правилом "4 цифри":
+        
+        # 3. Перетворюємо в рядок і додаємо нулі СПРАВА (ljust)
+        return str(int_val).ljust(4, '0')
+        
+    except (ValueError, TypeError):
+        # Якщо там якесь текстове сміття, повертаємо як є
+        return val
 
-# Перевіряємо, чи існують всі необхідні колонки
-if target_col in final_df.columns and all(c in final_df.columns for c in cols_to_move):
-    # 1. Створюємо список колонок БЕЗ тих, що ми хочемо перемістити
-    remaining_cols = [c for c in final_df.columns if c not in cols_to_move]
-    
-    # 2. Знаходимо індекс цільової колонки
-    target_idx = remaining_cols.index(target_col)
-    
-    # 3. Формуємо новий порядок: [все до цілі] + [ціль] + [наші колонки] + [все інше]
-    new_order = remaining_cols[:target_idx + 1] + cols_to_move + remaining_cols[target_idx + 1:]
-    
-    # 4. Застосовуємо новий порядок
-    final_df = final_df[new_order]
-    print(f"Колонки успішно переміщено за '{target_col}'.")
-else:
-    print(f"Увага: Колонку '{target_col}' не знайдено, порядок залишено без змін.")
+# Застосовуємо до колонки
+final_df['OPF_CODE'] = final_df['OPF_CODE'].apply(clean_opf_code_final)
 
-# Перевірка
-print(final_df.columns.tolist()[final_df.columns.get_loc('KVED_5_DESCR'):final_df.columns.get_loc('KVED_5_DESCR')+5])
+# Перевіряємо результат
+print(final_df['OPF_CODE'].value_counts().head(10))
