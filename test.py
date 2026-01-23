@@ -1,33 +1,59 @@
-# 1. Нормалізація регістру в обох таблицях (приводимо до нижнього)
-# Використовуємо .astype(str), щоб уникнути помилок, але треба обережно з NaN
-final_df['FIRM_OPFNM'] = final_df['FIRM_OPFNM'].str.lower().str.strip()
-ubki['OPF'] = ubki['OPF'].str.lower().str.strip()
+import pandas as pd
+import re
+import unicodedata
 
-# 2. Підготовка даних з UBKI
-# Перейменуємо колонки, щоб при мерджі було зрозуміло, де дані з UBKI
-ubki_subset = ubki[['IDENTIFYCODE', 'OPF_CODE', 'OPF']].rename(columns={
-    'OPF_CODE': 'UBKI_OPF_CODE', 
-    'OPF': 'UBKI_OPF_NAME'
+# 1. Твоя потужна функція нормалізації (адаптована)
+_APOS_RE = re.compile(r"['’`’']")
+_DASH_RE = re.compile(r"[-—−–]")
+
+def norm_ua(s):
+    if pd.isna(s) or s == "":
+        return None
+    
+    s = str(s)
+    # Нормалізація Unicode (щоб ї та i були правильними)
+    s = unicodedata.normalize("NFKC", s).lower()
+    
+    # Видаляємо апострофи та замінюємо різні тире на дефіс
+    s = _APOS_RE.sub("", s)
+    s = _DASH_RE.sub("-", s)
+    
+    # Замінюємо будь-які лапки на пробіли, а потім зайві пробіли
+    s = re.sub(r"[«»\"']", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    
+    return s
+
+# 2. Застосовуємо нормалізацію до обох датафреймів
+print("Нормалізація даних...")
+final_df['FIRM_OPFNM_NORM'] = final_df['FIRM_OPFNM'].apply(norm_ua)
+ubki['OPF_NORM'] = ubki['OPF'].apply(norm_ua)
+
+# 3. Готуємо UBKI для мерджу
+# Нам потрібні код, нормалізована назва (для логіки) та оригінальна назва (якщо хочете зберегти форматування джерела)
+ubki_subset = ubki[['IDENTIFYCODE', 'OPF_CODE', 'OPF_NORM']].rename(columns={
+    'OPF_CODE': 'UBKI_OPF_CODE',
+    'OPF_NORM': 'UBKI_OPF_NAME'
 })
 
-# 3. Виконуємо Merge
+# 4. Об'єднуємо (Merge)
 final_df = final_df.merge(ubki_subset, on='IDENTIFYCODE', how='left')
 
-# 4. Логіка заповнення (як з КВЕД)
-# Якщо в UBKI є код/назва — беремо їх. Якщо ні — залишаємо те, що було в final_df.
+# 5. Логіка заміни: Пріоритет UBKI -> Старі дані
+# Заповнюємо коди
+final_df['OPF_CODE'] = final_df['UBKI_OPF_CODE'].fillna(final_df['FIRM_OPFCD'])
 
-# Оновлюємо КОД (OPF_CODE)
-final_df['FIRM_OPFCD'] = final_df['UBKI_OPF_CODE'].fillna(final_df['FIRM_OPFCD'])
+# Заповнюємо назви (використовуємо нормалізовані версії для чистоти)
+final_df['OPF_NAME'] = final_df['UBKI_OPF_NAME'].fillna(final_df['FIRM_OPFNM_NORM'])
 
-# Оновлюємо НАЗВУ (OPF_NAME)
-final_df['FIRM_OPFNM'] = final_df['UBKI_OPF_NAME'].fillna(final_df['FIRM_OPFNM'])
+# 6. Фінальна обробка: Робимо красиву велику літеру
+# capitalize() робить першу букву великою, інші маленькими (Товариство з обмеженою...)
+final_df['OPF_NAME'] = final_df['OPF_NAME'].str.capitalize()
 
-# 5. Повертаємо велику літеру (Capitalize)
-# "товариство з обмеженою..." -> "Товариство з обмеженою..."
-final_df['FIRM_OPFNM'] = final_df['FIRM_OPFNM'].str.capitalize()
+# 7. Видаляємо старі та тимчасові колонки
+cols_to_drop = ['FIRM_OPFCD', 'FIRM_OPFNM', 'FIRM_OPFNM_NORM', 'UBKI_OPF_CODE', 'UBKI_OPF_NAME']
+# Перевіряємо, чи існують колонки перед видаленням, щоб не було помилки
+final_df = final_df.drop(columns=[c for c in cols_to_drop if c in final_df.columns])
 
-# 6. Видаляємо тимчасові колонки з UBKI
-final_df = final_df.drop(columns=['UBKI_OPF_CODE', 'UBKI_OPF_NAME'])
-
-# Перевірка результату
-print(final_df[['IDENTIFYCODE', 'FIRM_OPFCD', 'FIRM_OPFNM']].head())
+# Перевірка
+print(final_df[['IDENTIFYCODE', 'OPF_CODE', 'OPF_NAME']].head())
