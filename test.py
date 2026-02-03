@@ -1,58 +1,52 @@
-# 1. KVED HIERARCHY (Розбиваємо код на рівні)
-# Припускаємо, що формат КВЕД це "XX.XX" (наприклад, "01.11")
-df['KVED'] = df['KVED'].astype(str)
+import optuna
+import lightgbm as lgb
+from sklearn.metrics import mean_absolute_error
 
-# Перші 2 цифри (Розділ) - це широка індустрія (IT, Агро, Металургія)
-df['KVED_DIV'] = df['KVED'].apply(lambda x: x.split('.')[0] if '.' in x else x[:2])
+def objective(trial):
+    # Простір гіперпараметрів
+    param = {
+        'objective': 'regression',
+        'metric': 'mae',
+        'verbosity': -1,
+        'n_jobs': -1,
+        'random_state': 42,
+        'n_estimators': 5000,
+        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1),
+        'num_leaves': trial.suggest_int('num_leaves', 20, 100),
+        'max_depth': trial.suggest_int('max_depth', 5, 15),
+        'min_child_samples': trial.suggest_int('min_child_samples', 10, 100),
+        'subsample': trial.suggest_float('subsample', 0.5, 0.9),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 0.9),
+        'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 10.0, log=True),
+        'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 10.0, log=True),
+    }
 
-# Перші 3 символи (Група) - уточнення (наприклад 01.1 - вирощування однорічних)
-df['KVED_GROUP'] = df['KVED'].apply(lambda x: x[:4] if '.' in x else x[:3])
-
-print(f"Created KVED hierarchy features. Unique Divisions: {df['KVED_DIV'].nunique()}")
-
-# ---------------------------------------------------------
-
-# 2. SMOOTHED TARGET ENCODING (TE)
-# Ця функція замінює категорію на середнє значення таргету з регуляризацією
-# Це краще, ніж звичайне середнє, бо не дає шуму на рідкісних категоріях
-
-def calc_smooth_mean(df, by, on, m):
-    # by - колонка для групування (KVED)
-    # on - таргет (CURR_ACC або його логарифм)
-    # m - "вага" загального середнього (smoothing factor)
+    # Навчання з ранньою зупинкою
+    # Важливо: використовуємо X_train, y_train_log (лог-таргет!)
+    model = lgb.LGBMRegressor(**param)
     
-    # Середнє глобальне
-    mean = df[on].mean()
+    model.fit(
+        X_train, y_train_log,
+        eval_set=[(X_val, y_val_log)],
+        eval_metric='mae',
+        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)]
+    )
     
-    # Агрегація по категорії: сума та кількість
-    agg = df.groupby(by)[on].agg(['count', 'mean'])
-    counts = agg['count']
-    means = agg['mean']
+    # Передбачення
+    preds_log = model.predict(X_val)
+    mae = mean_absolute_error(y_val_log, preds_log)
     
-    # Формула згладжування:
-    # (n * category_mean + m * global_mean) / (n + m)
-    # Чим менше записів (n), тим сильніше тягнемо до глобального середнього
-    smooth = (counts * means + m * mean) / (counts + m)
-    
-    return df[by].map(smooth)
+    return mae
 
-# Важливо: TE краще робити на логарифмованому таргеті, щоб викиди не ламали середнє
-# Створимо тимчасову колонку з логом (якщо ще немає)
-temp_target = np.log1p(df['CURR_ACC']) 
+print("Starting Optuna optimization...")
+study = optuna.create_study(direction='minimize')
+study.optimize(objective, n_trials=30) # 30 ітерацій вистачить для початку
 
-# Робимо TE для рівнів ієрархії
-# m=10 або m=20 - хороша вага для згладжування
-df['KVED_TE'] = calc_smooth_mean(df, by='KVED', on='CURR_ACC', m=10) # Використовуємо оригінальну шкалу або лог - спробуй лог
-df['KVED_DIV_TE'] = calc_smooth_mean(df, by='KVED_DIV', on='CURR_ACC', m=10)
+print("Number of finished trials: {}".format(len(study.trials)))
+print("Best trial:")
+trial = study.best_trial
 
-# Я б радив спробувати TE саме на лог-таргеті:
-df['KVED_LOG_TE'] = calc_smooth_mean(df, by='KVED', on=temp_target.name if hasattr(temp_target, 'name') else 'log_target', m=10)
-
-print("Target Encoding features created.")
-
-# ---------------------------------------------------------
-# Не забудь додати нові колонки у список фічей
-# І переконайся, що 'KVED_DIV' та 'KVED_GROUP' переведені в category тип, якщо хочеш їх лишити як категоріальні
-categorical_add = ['KVED_DIV', 'KVED_GROUP']
-for c in categorical_add:
-    df[c] = df[c].astype('category')
+print("  Value: {}".format(trial.value))
+print("  Params: ")
+for key, value in trial.params.items():
+    print("    {}: {}".format(key, value))
