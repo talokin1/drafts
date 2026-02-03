@@ -1,146 +1,56 @@
-import pandas as pd
-import numpy as np
-import lightgbm as lgb
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import ks_2samp, mannwhitneyu
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score
+# 1. Визначаємо всі числові колонки і відокремлюємо таргет
+all_numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+if "CURR_ACC" in all_numeric_cols:
+    all_numeric_cols.remove("CURR_ACC")
 
-# ==========================================
-# 0. ЕТАП: Функції перевірки однорідності (Твій код)
-# ==========================================
-def check_distribution(y_train, y_val, threshold=0.05):
-    """
-    Перевіряє, чи однакові розподіли у тренувальній та валідаційній вибірках.
-    Повертає True, якщо p-value обох тестів вищі за поріг (розподіли не відрізняються).
-    """
-    # Тест Колмогорова-Смірнова (форми розподілів)
-    ks_stat, ks_p = ks_2samp(y_train, y_val)
-    
-    # Тест Манна-Вітні (медіани/ранги)
-    mw_stat, mw_p = mannwhitneyu(y_train, y_val, alternative='two-sided')
-    
-    return ks_p >= threshold and mw_p >= threshold, ks_p, mw_p
+# 2. Визначаємо групи (Raw - це все, що не потрапило в твої списки)
+# Припускаємо, що списки scale_cols, diff_cols і т.д. вже існують
+categorized_cols = set(scale_cols + diff_cols + ratio_cols + count_cols)
+raw_cols = [c for c in all_numeric_cols if c not in categorized_cols]
 
-def robust_split_search(X, y, test_size=0.2, threshold=0.05, max_attempts=100):
-    """
-    Шукає random_state, який дає однорідне розбиття.
-    """
-    print(f"--- Searching for homogeneous split (Threshold p-val > {threshold}) ---")
-    
-    best_seed = None
-    best_p_min = -1
-    best_split = None
-    
-    for seed in range(42, 42 + max_attempts):
-        X_tr, X_val, y_tr, y_val = train_test_split(X, y, test_size=test_size, random_state=seed)
-        
-        is_valid, ks_p, mw_p = check_distribution(y_tr, y_val, threshold=threshold)
-        min_p = min(ks_p, mw_p)
-        
-        # Якщо знайшли ідеальний спліт - одразу повертаємо
-        if is_valid:
-            print(f"✅ Found VALID split! Seed: {seed}")
-            print(f"   KS p-value: {ks_p:.4f}, MW p-value: {mw_p:.4f}")
-            return X_tr, X_val, y_tr, y_val, seed
-        
-        # Зберігаємо "найкращий з гірших" на випадок невдачі
-        if min_p > best_p_min:
-            best_p_min = min_p
-            best_seed = seed
-            best_split = (X_tr, X_val, y_tr, y_val)
+print(f"Categorized features: {len(categorized_cols)}")
+print(f"Raw/Uncategorized features found: {len(raw_cols)}")
 
-    print(f"⚠️ Warning: Perfect split not found after {max_attempts} attempts.")
-    print(f"   Using best found (Seed {best_seed}) with min p-value: {best_p_min:.4f}")
-    return (*best_split, best_seed)
+# 3. Фільтруємо "мертві" колонки (де > 95% нулів)
+# Перевіряємо ВСІ колонки разом (і старі, і raw)
+cols_to_check = scale_cols + diff_cols + ratio_cols + count_cols + raw_cols
+zero_rate = (df[cols_to_check] == 0).mean()
+valid_feats = set(zero_rate[zero_rate < 0.95].index)
 
-# ==========================================
-# 1. ЕТАП: Підготовка даних
-# ==========================================
-# Припускаємо, що df вже завантажений і очищений
-target_col = "CURR_ACC"
+# Оновлюємо списки - залишаємо тільки "живі"
+real_scale_cols = [c for c in scale_cols if c in valid_feats]
+real_diff_cols  = [c for c in diff_cols  if c in valid_feats]
+real_ratio_cols = [c for c in ratio_cols if c in valid_feats]
+real_count_cols = [c for c in count_cols if c in valid_feats]
+real_raw_cols   = [c for c in raw_cols   if c in valid_feats]
 
-# Видаляємо таргет з X (і категорії переводимо в category тип)
-X = df.drop(columns=[target_col], errors='ignore').copy()
-cat_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
-for c in cat_features:
-    X[c] = X[c].astype('category')
+# 4. Трансформації (через словник, щоб не було PerformanceWarning)
+new_feats_data = {}
 
-# Готуємо y (логарифм)
-y = np.log1p(df[target_col].clip(lower=0))
+def signed_log1p(x):
+    return np.sign(x) * np.log1p(np.abs(x))
 
-# --- ЗАПУСК РОЗУМНОГО СПЛІТА ---
-# Використовуємо твою логіку для пошуку ідеального random_state
-X_train, X_val, y_train_log, y_val_log, used_seed = robust_split_search(
-    X, y, test_size=0.2, threshold=0.05  # Можна поставити 0.1 або 0.2 для суворості
-)
+# Signed Log: для грошей, різниць і сирих даних (там можуть бути мінуси)
+for col in real_scale_cols + real_diff_cols + real_raw_cols:
+    new_feats_data[col + "_log"] = signed_log1p(df[col])
 
-# ==========================================
-# 2. ЕТАП: Selector Model (Відбір фічей)
-# ==========================================
-print("\n--- Training Selector Model ---")
-selector_reg = lgb.LGBMRegressor(
-    objective="huber",
-    metric="mae",
-    alpha=1.5,
-    n_estimators=1000,
-    learning_rate=0.05,
-    num_leaves=31,
-    reg_alpha=10, 
-    reg_lambda=10,
-    random_state=used_seed, # Використовуємо знайдений сід!
-    n_jobs=-1,
-    verbose=-1
-)
+# Log1p: тільки для лічильників (вони >= 0)
+for col in real_count_cols:
+    new_feats_data[col + "_log"] = np.log1p(df[col])
 
-selector_reg.fit(
-    X_train, y_train_log,
-    categorical_feature=cat_features,
-    eval_set=[(X_val, y_val_log)],
-    callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)]
-)
+# Ratios: копіюємо без змін
+for col in real_ratio_cols:
+    new_feats_data[col] = df[col]
 
-# Відбираємо Топ-50 фічей
-feature_imp = pd.DataFrame({
-    'Value': selector_reg.feature_importances_,
-    'Feature': X_train.columns
-}).sort_values(by="Value", ascending=False)
+# 5. Збираємо фінальний X одним махом
+X = pd.DataFrame(new_feats_data, index=df.index)
 
-selected_features = feature_imp.head(50)['Feature'].tolist() # Топ-50 достатньо
-print(f"Selected {len(selected_features)} features.")
+# Додаємо категорії (якщо є)
+cat_cols = df.select_dtypes(include=['category', 'object']).columns.tolist()
+if cat_cols:
+    X = pd.concat([X, df[cat_cols]], axis=1) # axis=1 додає стовпці
 
-# ==========================================
-# 3. ЕТАП: Фінальна модель
-# ==========================================
-print("\n--- Training Final Model ---")
-X_train_sel = X_train[selected_features].copy()
-X_val_sel = X_val[selected_features].copy()
-cat_features_sel = [c for c in cat_features if c in selected_features]
+# 6. Таргет
+y = np.log1p(df["CURR_ACC"].clip(lower=0))
 
-final_reg = lgb.LGBMRegressor(
-    objective="huber",
-    metric="mae",
-    alpha=1.5,
-    n_estimators=5000,
-    learning_rate=0.03,
-    num_leaves=31,
-    reg_alpha=1, # Слабша регуляризація
-    reg_lambda=1,
-    random_state=used_seed,
-    n_jobs=-1,
-    verbose=-1
-)
-
-final_reg.fit(
-    X_train_sel, y_train_log,
-    categorical_feature=cat_features_sel,
-    eval_set=[(X_val_sel, y_val_log)],
-    eval_metric="mae",
-    callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=True)]
-)
-
-# Оцінка
-y_pred_log = final_reg.predict(X_val_sel)
-print(f"FINAL R2: {r2_score(y_val_log, y_pred_log):.4f}")
-print(f"FINAL MAE: {mean_absolute_error(y_val_log, y_pred_log):.4f}")
+print(f"FINAL Total Features: {X.shape[1]}")
