@@ -1,56 +1,40 @@
-# 1. Визначаємо всі числові колонки і відокремлюємо таргет
-all_numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-if "CURR_ACC" in all_numeric_cols:
-    all_numeric_cols.remove("CURR_ACC")
+# 1. АНАЛІЗ: Що це за дивна "голка" на графіку?
+# Дивимось найпопулярніші значення (моди)
+print("Top 5 most frequent values (Check for technical spikes):")
+print(df["CURR_ACC"].value_counts().head(5))
 
-# 2. Визначаємо групи (Raw - це все, що не потрапило в твої списки)
-# Припускаємо, що списки scale_cols, diff_cols і т.д. вже існують
-categorized_cols = set(scale_cols + diff_cols + ratio_cols + count_cols)
-raw_cols = [c for c in all_numeric_cols if c not in categorized_cols]
+# 2. АНАЛІЗ: Хто ці "кити" справа?
+# Дивимось 99.9-й перцентиль (топ 0.1% найбагатших)
+q_high = df["CURR_ACC"].quantile(0.999)
+print(f"\n99.9% cutoff value: {q_high:.2f}")
+print(f"Rows above cutoff: {(df['CURR_ACC'] > q_high).sum()}")
 
-print(f"Categorized features: {len(categorized_cols)}")
-print(f"Raw/Uncategorized features found: {len(raw_cols)}")
+# -------------------------------------------------------
+# 3. ЧИСТКА (Вибирай варіант А або Б)
+# -------------------------------------------------------
 
-# 3. Фільтруємо "мертві" колонки (де > 95% нулів)
-# Перевіряємо ВСІ колонки разом (і старі, і raw)
-cols_to_check = scale_cols + diff_cols + ratio_cols + count_cols + raw_cols
-zero_rate = (df[cols_to_check] == 0).mean()
-valid_feats = set(zero_rate[zero_rate < 0.95].index)
+# ВАРІАНТ А: Обрізати "хвіст" (найпопулярніший метод)
+# Ми просто викидаємо топ 0.1% або 0.5% клієнтів, які псують масштаб
+df_clean = df[df["CURR_ACC"] < q_high].copy()
 
-# Оновлюємо списки - залишаємо тільки "живі"
-real_scale_cols = [c for c in scale_cols if c in valid_feats]
-real_diff_cols  = [c for c in diff_cols  if c in valid_feats]
-real_ratio_cols = [c for c in ratio_cols if c in valid_feats]
-real_count_cols = [c for c in count_cols if c in valid_feats]
-real_raw_cols   = [c for c in raw_cols   if c in valid_feats]
+# ВАРІАНТ Б: Sigma Clipping (статистичний метод)
+# Викидаємо все, що далі 3-х стандартних відхилень (в логарифмічній шкалі)
+# Це краще для Гауссового розподілу, який ми бачимо на картинці
+log_data = np.log1p(df["CURR_ACC"])
+mean = log_data.mean()
+std = log_data.std()
+lower_bound = mean - 3 * std
+upper_bound = mean + 3 * std
 
-# 4. Трансформації (через словник, щоб не було PerformanceWarning)
-new_feats_data = {}
+# Фільтруємо за логарифмом
+df_sigma = df[(log_data >= lower_bound) & (log_data <= upper_bound)].copy()
 
-def signed_log1p(x):
-    return np.sign(x) * np.log1p(np.abs(x))
+print(f"\nOriginal Size: {len(df)}")
+print(f"After Quantile cut: {len(df_clean)}")
+print(f"After Sigma cut: {len(df_sigma)}")
 
-# Signed Log: для грошей, різниць і сирих даних (там можуть бути мінуси)
-for col in real_scale_cols + real_diff_cols + real_raw_cols:
-    new_feats_data[col + "_log"] = signed_log1p(df[col])
-
-# Log1p: тільки для лічильників (вони >= 0)
-for col in real_count_cols:
-    new_feats_data[col + "_log"] = np.log1p(df[col])
-
-# Ratios: копіюємо без змін
-for col in real_ratio_cols:
-    new_feats_data[col] = df[col]
-
-# 5. Збираємо фінальний X одним махом
-X = pd.DataFrame(new_feats_data, index=df.index)
-
-# Додаємо категорії (якщо є)
-cat_cols = df.select_dtypes(include=['category', 'object']).columns.tolist()
-if cat_cols:
-    X = pd.concat([X, df[cat_cols]], axis=1) # axis=1 додає стовпці
-
-# 6. Таргет
-y = np.log1p(df["CURR_ACC"].clip(lower=0))
-
-print(f"FINAL Total Features: {X.shape[1]}")
+# 4. Перевірка результату (малюємо новий графік)
+plt.figure(figsize=(10, 5))
+sns.histplot(np.log1p(df_clean["CURR_ACC"]), bins=100)
+plt.title("Distribution after removing outliers")
+plt.show()
