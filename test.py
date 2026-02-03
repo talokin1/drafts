@@ -1,28 +1,58 @@
-# 1. Знаходимо "шкідливе" значення (найпопулярніше > 0)
-# Працюємо з df_clean, де вже прибрані "кити" (мільйонери)
-target_col = "CURR_ACC"
+# 1. KVED HIERARCHY (Розбиваємо код на рівні)
+# Припускаємо, що формат КВЕД це "XX.XX" (наприклад, "01.11")
+df['KVED'] = df['KVED'].astype(str)
 
-# Перевірка: чи таргет вже логарифмований?
-# Якщо максимум < 20, то швидше за все так.
-is_logged = df[target_col].max() < 20
-print(f"Is target already logged? {is_logged}")
+# Перші 2 цифри (Розділ) - це широка індустрія (IT, Агро, Металургія)
+df['KVED_DIV'] = df['KVED'].apply(lambda x: x.split('.')[0] if '.' in x else x[:2])
 
-# Знаходимо моду (пік)
-spike_value = df[target_col].mode()[0]
-print(f"Detected Spike Value (Log scale): {spike_value:.4f}")
-print(f"Real Money Equivalent: {np.expm1(spike_value):.2f}") 
+# Перші 3 символи (Група) - уточнення (наприклад 01.1 - вирощування однорічних)
+df['KVED_GROUP'] = df['KVED'].apply(lambda x: x[:4] if '.' in x else x[:3])
 
-# 2. Фільтрація (Вирізаємо "голку")
-# Якщо це технічний залишок, він зазвичай має дуже вузький діапазон
-# Видалимо все, що дуже близько до піку (наприклад, +/- 0.01)
-df_final = df[~((df[target_col] >= spike_value - 0.01) & 
-                (df[target_col] <= spike_value + 0.01))].copy()
+print(f"Created KVED hierarchy features. Unique Divisions: {df['KVED_DIV'].nunique()}")
 
-print(f"Rows dropped: {len(df) - len(df_final)}")
+# ---------------------------------------------------------
 
-# 3. Правильний графік (без подвійного логарифма)
-plt.figure(figsize=(10, 5))
-# Увага: тут ми просто малюємо df_final[target_col], бо він ВЖЕ логарифмований
-sns.histplot(df_final[target_col], bins=100)
-plt.title("Clean Distribution (No Spike, No Whales)")
-plt.show()
+# 2. SMOOTHED TARGET ENCODING (TE)
+# Ця функція замінює категорію на середнє значення таргету з регуляризацією
+# Це краще, ніж звичайне середнє, бо не дає шуму на рідкісних категоріях
+
+def calc_smooth_mean(df, by, on, m):
+    # by - колонка для групування (KVED)
+    # on - таргет (CURR_ACC або його логарифм)
+    # m - "вага" загального середнього (smoothing factor)
+    
+    # Середнє глобальне
+    mean = df[on].mean()
+    
+    # Агрегація по категорії: сума та кількість
+    agg = df.groupby(by)[on].agg(['count', 'mean'])
+    counts = agg['count']
+    means = agg['mean']
+    
+    # Формула згладжування:
+    # (n * category_mean + m * global_mean) / (n + m)
+    # Чим менше записів (n), тим сильніше тягнемо до глобального середнього
+    smooth = (counts * means + m * mean) / (counts + m)
+    
+    return df[by].map(smooth)
+
+# Важливо: TE краще робити на логарифмованому таргеті, щоб викиди не ламали середнє
+# Створимо тимчасову колонку з логом (якщо ще немає)
+temp_target = np.log1p(df['CURR_ACC']) 
+
+# Робимо TE для рівнів ієрархії
+# m=10 або m=20 - хороша вага для згладжування
+df['KVED_TE'] = calc_smooth_mean(df, by='KVED', on='CURR_ACC', m=10) # Використовуємо оригінальну шкалу або лог - спробуй лог
+df['KVED_DIV_TE'] = calc_smooth_mean(df, by='KVED_DIV', on='CURR_ACC', m=10)
+
+# Я б радив спробувати TE саме на лог-таргеті:
+df['KVED_LOG_TE'] = calc_smooth_mean(df, by='KVED', on=temp_target.name if hasattr(temp_target, 'name') else 'log_target', m=10)
+
+print("Target Encoding features created.")
+
+# ---------------------------------------------------------
+# Не забудь додати нові колонки у список фічей
+# І переконайся, що 'KVED_DIV' та 'KVED_GROUP' переведені в category тип, якщо хочеш їх лишити як категоріальні
+categorical_add = ['KVED_DIV', 'KVED_GROUP']
+for c in categorical_add:
+    df[c] = df[c].astype('category')
