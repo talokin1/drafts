@@ -1,12 +1,15 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
 
-plt.figure(figsize=(10, 8))
-# Використовуємо ваш DataFrame з попереднього кроку
-sns.barplot(x='importance', y='feature', data=feature_importance_df.head(30))
-plt.title('Top 30 Most Important Features')
-plt.tight_layout()
+# Отримуємо значення важливості
+importance = reg.feature_importances_
+feature_names = X_train_final.columns
 
-# Збереження картинки
-plt.savefig('feature_importance_plot.png', dpi=300)
-plt.show()
+# Створюємо DataFrame
+feature_importance_df = pd.DataFrame({
+    'feature': feature_names,
+    'importance': importance
+}).sort_values(by='importance', ascending=False)
+
+# Зберігаємо у файл
+feature_importance_df.to_csv('feature_importance.csv', index=False)
+print("Feature importance збережено у feature_importance.csv")
