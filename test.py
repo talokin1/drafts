@@ -1,26 +1,30 @@
-ratio = len(y_train[y_train == 0]) / len(y_train[y_train > 0]) # Автоматичний розрахунок ~60
+# ... (твій код генерації features_to_use) ...
 
-weights = np.where(y_train_log > 0, ratio, 1)
+# 1. Явно викидаємо ID зі списку фічей, якщо він туди потрапив
+id_col = 'IDENTIFYCODE' # або 'CONTRAGENTID'
+if id_col in features_to_use:
+    features_to_use.remove(id_col)
+    
+# Також перевір списки, з яких ти клеїш features_to_use, 
+# щоб ID не потрапив у log-трансформацію (наприклад, у real_raw_cols)
 
-reg = lgb.LGBMRegressor(
-    objective="regression", # Див. пораду нижче про Tweedie
-    n_estimators=5000,
-    learning_rate=0.03,
-    num_leaves=31,
-    min_child_samples=5, # Можна зменшити, бо у вас мало "цінних" даних
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42, # Краще зафіксувати числом замість змінної для відтворюваності тут
-    n_jobs=-1
-)
+# 2. Формуємо X, але ID ставимо в індекс
+X = df[features_to_use].copy()
+X.index = df[id_col] # <--- ОСЬ ГОЛОВНИЙ ТРЮК
 
-reg.fit(
-    X_train_final,
-    y_train_log,
-    sample_weight=weights,
-    eval_set=[(X_val_final, y_val_log)],
-    eval_metric="l1", # Або 'mae'
-    callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=True)]
-)
+y = df["CURR_ACC"]
 
-y_pred_log = reg.predict(X_val_final)
+print(f"FINAL Total Features: {X.shape[1]}")
+# Переконайся, що X.columns не містить 'IDENTIFYCODE'
+assert id_col not in X.columns
+
+
+
+
+y_pred_val = reg.predict(X_val)
+
+validation_results = pd.DataFrame({
+    'IDENTIFYCODE': X_val.index,  # <--- Дістаємо збережені ID
+    'True_Value': np.expm1(y_val_log),
+    'Predicted': np.expm1(y_pred_val)
+})
