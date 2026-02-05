@@ -2,35 +2,37 @@ import pandas as pd
 import numpy as np
 
 # ==========================================
-# 0. ПЕРЕДУМОВА (Має бути вже виконано)
+# 0. ПЕРЕДУМОВА (Має бути вже виконано в пам'яті)
 # ==========================================
-# Припускаємо, що у пам'яті вже є змінна y_pred_stretched
-# (це результат твого коду: y_pred_stretched = (y_pred_log - mean_pred) * scaling_factor + mean_true)
+# Ми припускаємо, що у тебе в пам'яті вже є змінна y_pred_stretched
+# Це результат твого попереднього кроку: 
+# y_pred_stretched = (y_pred_log - mean_pred) * scaling_factor + mean_true
 
 # ==========================================
-# 1. ФОРМУВАННЯ DATA FRAME ЗІ "РОЗТЯГНУТИМ" ПРОГНОЗОМ
+# 1. КОНВЕРТАЦІЯ ТА СТВОРЕННЯ БАЗОВОЇ ТАБЛИЦІ
 # ==========================================
 
-# Конвертуємо логарифми назад у гроші
+# Конвертуємо розтягнуті логарифми назад у гроші
 pred_stretched_money = np.expm1(y_pred_stretched)
 true_value_money = np.expm1(y_val_log)
 
-# Створюємо базову таблицю результатів
-# X_val.index має містити IDENTIFYCODE (якщо ми це зробили на етапі спліта)
+# Створюємо dataframe результатів
+# X_val.index містить IDENTIFYCODE (якщо ми зберегли його в індексі при спліті)
 dist_results = pd.DataFrame({
     'IDENTIFYCODE': X_val.index,
     'True_Value': true_value_money,
-    'Predicted': pred_stretched_money  # <--- ТУТ ТЕПЕР РОЗТЯГНУТИЙ ПРОГНОЗ
+    'Predicted': pred_stretched_money  # <--- ТУТ ТЕПЕР НОВИЙ, "РОЗТЯГНУТИЙ" ПРОГНОЗ
 })
 
 # ==========================================
-# 2. ПІДТЯГУВАННЯ ДОДАТКОВИХ ДАНИХ
+# 2. ПІДТЯГУВАННЯ ДОДАТКОВИХ ДАНИХ (by_items)
 # ==========================================
-# Назва колонки, яку ти хочеш бачити як "by items" (наприклад, 'REVENUE_CUR' або 'TOTAL_LIABILITIES')
-LIABILITIES_COL = 'REVENUE_CUR' 
+# Назва колонки, яку ти хочеш бачити як "by items"
+LIABILITIES_COL = 'REVENUE_CUR' # <-- Перевір, чи це правильна назва колонки у df
 
-# Мерджимо з оригінальним датасетом, щоб дістати цю колонку
-# Використовуємо left_index=True, бо в dist_results ID стоїть в індексі (або зміни на on='IDENTIFYCODE')
+# Мерджимо з оригінальним датасетом.
+# Використовуємо right_index=True, бо в df зазвичай ID стоїть в індексі.
+# Якщо ID - це колонка, зміни на: right_on='IDENTIFYCODE'
 report_df = dist_results.merge(df[[LIABILITIES_COL]], left_on='IDENTIFYCODE', right_index=True, how='left')
 
 # ==========================================
@@ -67,7 +69,7 @@ summary_table = summary_table.round(2)
 # ==========================================
 # 5. ЕКСПОРТ В EXCEL (З ФОРМАТУВАННЯМ)
 # ==========================================
-file_name = 'Distribution_Model_Report.xlsx' # Нове ім'я файлу
+file_name = 'Distribution_Model_Report.xlsx' # Нове ім'я файлу, щоб не перезаписати старий
 
 with pd.ExcelWriter(file_name, engine='xlsxwriter') as writer:
     # 1. Запис детальної таблиці
