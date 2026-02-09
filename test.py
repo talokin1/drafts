@@ -1,34 +1,15 @@
-base_clients = (
-    result
-    .loc[:, ["IDENTIFYCODE", "REGISTERDATE"]]
-    .drop_duplicates()
-)
-
-base_clients["REGISTERDATE"] = pd.to_datetime(base_clients["REGISTERDATE"]).dt.date
-
-arcdates = sorted(base_clients["REGISTERDATE"].unique())
-
-
-SELECT 
-    arcdate,
-    CONTRAGENTID_ZP,
-    CONTRAGENTID_EMPL
-FROM B2_OLAP.AR_ZKP_BY_EMPLOYEE@dwh
-WHERE arcdate = :arcdate
-  AND is_active_zkp = 'Y'
-  AND is_employed = 1
-
-
-import pandas as pd
-
 dfs = []
 
-for d in arcdates:
-    df_zkp = pd.read_sql(
+for arcdate in arcdates:
+    temp = get_data(
         QUERY,
-        con=conn,
-        params={"arcdate": d}
+        sql_params={"arcdate": arcdate}
     )
-    dfs.append(df_zkp)
 
-zkp_df = pd.concat(dfs, ignore_index=True)
+    # фільтримо тільки потрібні компанії
+    temp = temp[temp["CONTRAGENTID_ZP"].isin(base_clients["IDENTIFYCODE"])]
+
+    print(f"Doing {arcdate}, shape: {temp.shape[0]}")
+    dfs.append(temp)
+
+zkp_employees = pd.concat(dfs, ignore_index=True)
