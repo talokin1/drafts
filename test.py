@@ -1,32 +1,25 @@
-# --- Створення динамічних бакетів ---
+# 2. Витягуємо компоненти коду з колонки KVED
 
-# 1. Генеруємо середину: від 1000 до 100000 з кроком 5000
-# np.arange(start, stop, step) - не включає останнє число, тому пишемо 100001
-mid_bins = np.arange(1000, 100001, 5000) 
+# Клас — повний KVED
+df['Class_Code'] = df['KVED']
 
-# 2. Формуємо повний список меж
-# [-1] -> для 0
-# [1000] -> кінець першого бакету
-# mid_bins -> ваші кроки по 5к (6000, 11000 ... 96000)
-# [100000, 1000000, np.inf] -> хвости
-raw_bins = [-1] + list(mid_bins) + [100000, 1000000, np.inf]
+# Розділ — перші 2 символи
+df['Division_Code'] = df['KVED'].str[:2]
 
-# Прибираємо дублікати і сортуємо (наприклад, 100к може дублюватися)
-bins = sorted(list(set(raw_bins)))
+# Група — формат XX.X (краще не просто [:4], а по split)
+df['Group_Code'] = df['KVED'].apply(lambda x: '.'.join(x.split('.')[:2]) if '.' in x else x)
 
-# 3. Автоматично створюємо підписи (Labels), щоб не писати їх вручну
-labels = []
-for i in range(len(bins) - 1):
-    low = bins[i]
-    high = bins[i+1]
-    
-    if low == -1:
-        labels.append("0-1k")
-    elif high == np.inf:
-        labels.append(f"{int(low/1000)}k+")
-    else:
-        # Формат: "1k-6k", "6k-11k" і т.д.
-        labels.append(f"{int(low/1000)}k-{int(high/1000)}k")
+# Section_Code уже формується через division_to_section_code
+df['Section_Code'] = df['Division_Code'].map(division_to_section_code)
 
-# Застосовуємо (переконайтеся, що колонка називається 'Fcst', як на скріні)
-final_report['Income_Range'] = pd.cut(final_report['Fcst'], bins=bins, labels=labels)
+
+
+
+df['Class_Name'] = df['Class_Code'].map(classes_name_map)
+df['Group_Name'] = df['Group_Code'].map(groups_name_map)
+df['Division_Name'] = df['Division_Code'].map(divisions_name_map)
+df['Section_Name'] = df['Section_Code'].map(sections_name_map)
+
+
+
+final_df = df.drop(columns=['div_key', 'group_key'], errors='ignore')
