@@ -1,198 +1,152 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+import lightgbm as lgb
+import matplotlib.pyplot as plt
 
-# =============================================
-# CONFIG
-# =============================================
+from sklearn.model_selection import train_test_split
+from sklearn.isotonic import IsotonicRegression
+from sklearn.metrics import (
+    mean_absolute_error,
+    median_absolute_error,
+    r2_score
+)
 
-ID_COL = "IDENTIFYCODE"
-TRUE_COL = "True_Value"
-PRED_COL = "Predicted"
+RANDOM_STATE = 42
 
-INDUSTRY_COL = "GROUP_CODE"
-OPF_COL = "OPF_CODE"
+# =====================================================
+# 1️⃣ TRAIN / VAL SPLIT (STRATIFIED BY TARGET)
+# =====================================================
 
-OUTPUT_FILE = "Business_Model_Report_v2.xlsx"
+y_bins = pd.qcut(y, q=10, labels=False, duplicates="drop")
 
-# =============================================
-# PREPARE MAIN DF
-# =============================================
+X_train, X_val, y_train, y_val = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=RANDOM_STATE,
+    stratify=y_bins
+)
 
-df = validation_results.copy()
+# лог-простір
+y_train_log = np.log1p(y_train)
+y_val_log   = np.log1p(y_val)
 
-# Ensure ID exists
-if ID_COL not in df.columns:
-    df = df.reset_index().rename(columns={"index": ID_COL})
+# =====================================================
+# 2️⃣ CATEGORICAL HANDLING
+# =====================================================
 
-# Merge meta from X_val
-if ID_COL not in X_val.columns and X_val.index.name == ID_COL:
-    df = df.merge(
-        X_val[[INDUSTRY_COL, OPF_COL]],
-        left_on=ID_COL,
-        right_index=True,
-        how="left"
-    )
-else:
-    df = df.merge(
-        X_val[[ID_COL, INDUSTRY_COL, OPF_COL]],
-        on=ID_COL,
-        how="left"
-    )
+cat_cols = [c for c in X_train.columns 
+            if X_train[c].dtype.name in ("object", "category")]
 
-df["Abs_Error"] = (df[TRUE_COL] - df[PRED_COL]).abs()
+for c in cat_cols:
+    X_train[c] = X_train[c].astype("category")
+    X_val[c]   = X_val[c].astype("category")
 
-# =============================================
-# DETAILED BUCKETS
-# =============================================
+# =====================================================
+# 3️⃣ LIGHTGBM
+# =====================================================
 
-bins = [-1, 1000, 10000]
-bins += list(range(20000, 100001, 10000))   # 10-20, 20-30, ..., 90-100
-bins += [1000000, np.inf]
-bins = sorted(set(bins))
+reg = lgb.LGBMRegressor(
+    objective="huber",
+    n_estimators=5000,
+    learning_rate=0.03,
+    num_leaves=127,
+    max_depth=-1,
+    min_child_samples=15,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    categorical_feature=cat_cols,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
 
-labels = []
-for i in range(len(bins)-1):
-    low = bins[i]
-    high = bins[i+1]
+reg.fit(
+    X_train,
+    y_train_log,
+    eval_set=[(X_val, y_val_log)],
+    eval_metric="l1",
+    callbacks=[lgb.early_stopping(200)]
+)
 
-    if high == np.inf:
-        labels.append(f"{int(low/1000)}k+")
-    elif low == -1:
-        labels.append("0-1k")
-    else:
-        labels.append(f"{int(low/1000)}k-{int(high/1000)}k")
+# =====================================================
+# 4️⃣ BASE PREDICTIONS
+# =====================================================
 
-df["Income_Bucket_TRUE"] = pd.cut(df[TRUE_COL], bins=bins, labels=labels)
-df["Income_Bucket_PRED"] = pd.cut(df[PRED_COL], bins=bins, labels=labels)
+y_pred_log = reg.predict(X_val)
 
-# =============================================
-# BUCKET SUMMARY
-# =============================================
+# =====================================================
+# 5️⃣ POST-CALIBRATION (ISOTONIC)
+# =====================================================
 
-def bucket_summary(data, bucket_col, value_col):
-    table = (
-        data.groupby(bucket_col, observed=False)
-        .agg(
-            Clients=(ID_COL, "count"),
-            Avg_Income=(value_col, "mean"),
-            Median_Income=(value_col, "median")
-        )
-        .reset_index()
-    )
-    return table.round(2)
+iso = IsotonicRegression(out_of_bounds="clip")
 
-bucket_true = bucket_summary(df, "Income_Bucket_TRUE", TRUE_COL)
-bucket_pred = bucket_summary(df, "Income_Bucket_PRED", PRED_COL)
+iso.fit(y_pred_log, y_val_log)
 
-# =============================================
-# INDUSTRY / OPF INSIGHTS
-# =============================================
+y_pred_log_cal = iso.predict(y_pred_log)
 
-def segment_report(data, group_col):
+# =====================================================
+# 6️⃣ BACK TO ORIGINAL SCALE
+# =====================================================
 
-    high_threshold = data[TRUE_COL].quantile(0.8)
-    data["High_Value"] = data[TRUE_COL] >= high_threshold
+y_val_orig      = np.expm1(y_val_log)
+y_pred_orig     = np.expm1(y_pred_log)
+y_pred_cal_orig = np.expm1(y_pred_log_cal)
 
-    g = (
-        data.groupby(group_col, observed=False)
-        .agg(
-            Clients=(ID_COL, "count"),
-            Avg_Income=(TRUE_COL, "mean"),
-            Median_Income=(TRUE_COL, "median"),
-            P90_Income=(TRUE_COL, lambda x: x.quantile(0.9)),
-            Avg_Predicted=(PRED_COL, "mean"),
-            Avg_Error=("Abs_Error", "mean"),
-            High_Value_%=("High_Value", "mean")
-        )
-        .reset_index()
-    )
+# =====================================================
+# 7️⃣ METRICS
+# =====================================================
 
-    g["High_Value_%"] *= 100
-    g["Prediction_Gap"] = g["Avg_Predicted"] - g["Avg_Income"]
+print("="*60)
+print("LOG SPACE METRICS")
+print("="*60)
 
-    g = g[g["Clients"] >= 30]
+print("MAE_log      :", mean_absolute_error(y_val_log, y_pred_log))
+print("MAE_log_cal  :", mean_absolute_error(y_val_log, y_pred_log_cal))
+print("R2_log       :", r2_score(y_val_log, y_pred_log))
 
-    return g.sort_values("Avg_Income", ascending=False).round(2)
+print("="*60)
+print("ORIGINAL SCALE METRICS")
+print("="*60)
 
-industry_table = segment_report(df.copy(), INDUSTRY_COL)
-opf_table = segment_report(df.copy(), OPF_COL)
+print("MAE base     :", mean_absolute_error(y_val_orig, y_pred_orig))
+print("MAE calibrated:", mean_absolute_error(y_val_orig, y_pred_cal_orig))
+print("MedAE        :", median_absolute_error(y_val_orig, y_pred_orig))
 
-# =============================================
-# WRITE EXCEL
-# =============================================
+# =====================================================
+# 8️⃣ VALIDATION RESULTS DF
+# =====================================================
 
-with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
+validation_results = pd.DataFrame({
+    "IDENTIFYCODE": X_val.index,
+    "True_Value": y_val_orig,
+    "Predicted_Base": y_pred_orig,
+    "Predicted_Calibrated": y_pred_cal_orig,
+    "Abs_Error_Base": np.abs(y_val_orig - y_pred_orig),
+    "Abs_Error_Cal": np.abs(y_val_orig - y_pred_cal_orig)
+})
 
-    workbook = writer.book
-    header_fmt = workbook.add_format({"bold": True, "bg_color": "#D7E4BC"})
-    money_fmt = workbook.add_format({"num_format": "#,##0.00"})
-    percent_fmt = workbook.add_format({"num_format": "0.00"})
+# =====================================================
+# 9️⃣ DIAGNOSTICS
+# =====================================================
 
-    # -----------------------------------------
-    # SHEET 1 - Validation
-    # -----------------------------------------
+plt.figure(figsize=(6,6))
+plt.scatter(y_val_log, y_pred_log, alpha=0.3, s=10)
+plt.plot([y_val_log.min(), y_val_log.max()],
+         [y_val_log.min(), y_val_log.max()],
+         "r--")
+plt.title("Log Space: Base Model")
+plt.show()
 
-    sheet1 = "Validation_Report"
+plt.figure(figsize=(6,6))
+plt.scatter(y_val_log, y_pred_log_cal, alpha=0.3, s=10)
+plt.plot([y_val_log.min(), y_val_log.max()],
+         [y_val_log.min(), y_val_log.max()],
+         "r--")
+plt.title("Log Space: Calibrated")
+plt.show()
 
-    main_cols = [
-        ID_COL,
-        TRUE_COL,
-        PRED_COL,
-        "Abs_Error",
-        "Income_Bucket_TRUE",
-        "Income_Bucket_PRED"
-    ]
-
-    df[main_cols].to_excel(writer, sheet_name=sheet1, startrow=1, index=False)
-    bucket_true.to_excel(writer, sheet_name=sheet1, startrow=1, startcol=8, index=False)
-    bucket_pred.to_excel(writer, sheet_name=sheet1, startrow=1, startcol=14, index=False)
-
-    ws1 = writer.sheets[sheet1]
-
-    ws1.write(0, 0, "Client-Level Prediction", header_fmt)
-    ws1.write(0, 8, "Buckets by TRUE", header_fmt)
-    ws1.write(0, 14, "Buckets by PREDICTED", header_fmt)
-
-    for col_num, col_name in enumerate(main_cols):
-        if col_name in [TRUE_COL, PRED_COL, "Abs_Error"]:
-            ws1.set_column(col_num, col_num, 18, money_fmt)
-
-    ws1.freeze_panes(2, 0)
-
-    # -----------------------------------------
-    # SHEET 2 - Industry
-    # -----------------------------------------
-
-    sheet2 = "Industry_Insights"
-    industry_table.to_excel(writer, sheet_name=sheet2, startrow=1, index=False)
-
-    ws2 = writer.sheets[sheet2]
-    ws2.write(0, 0, "Industry Profitability Report", header_fmt)
-
-    for col_num, col_name in enumerate(industry_table.columns):
-
-        if "Income" in col_name or "Predicted" in col_name or "Error" in col_name:
-            ws2.set_column(col_num, col_num, 18, money_fmt)
-
-        if "High_Value_%" in col_name:
-            ws2.set_column(col_num, col_num, 15, percent_fmt)
-
-    ws2.freeze_panes(2, 0)
-
-    sheet3 = "OPF_Insights"
-    opf_table.to_excel(writer, sheet_name=sheet3, startrow=1, index=False)
-
-    ws3 = writer.sheets[sheet3]
-    ws3.write(0, 0, "OPF Profitability Report", header_fmt)
-
-    for col_num, col_name in enumerate(opf_table.columns):
-
-        if "Income" in col_name or "Predicted" in col_name or "Error" in col_name:
-            ws3.set_column(col_num, col_num, 18, money_fmt)
-
-        if "High_Value_%" in col_name:
-            ws3.set_column(col_num, col_num, 15, percent_fmt)
-
-    ws3.freeze_panes(2, 0)
-
-print(f"Report saved to {OUTPUT_FILE}")
+residuals = y_val_log - y_pred_log
+plt.figure(figsize=(6,4))
+plt.hist(residuals, bins=80)
+plt.title("Residual Distribution (log space)")
+plt.show()
