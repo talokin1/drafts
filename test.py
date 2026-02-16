@@ -1,152 +1,156 @@
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
-import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (
     mean_absolute_error,
-    median_absolute_error,
-    r2_score
+    r2_score,
+    roc_auc_score,
+    classification_report
 )
 
 RANDOM_STATE = 42
 
-# =====================================================
-# 1️⃣ TRAIN / VAL SPLIT (STRATIFIED BY TARGET)
-# =====================================================
+# ==========================================================
+# 1. TARGET PREPARATION
+# ==========================================================
 
-y_bins = pd.qcut(y, q=10, labels=False, duplicates="drop")
+threshold = 0.0
+y_binary = (y > threshold).astype(int)
 
-X_train, X_val, y_train, y_val = train_test_split(
-    X,
-    y,
+# стратифікація по бінарному таргету
+X_train, X_val, y_train, y_val, y_bin_train, y_bin_val = train_test_split(
+    X, y, y_binary,
     test_size=0.2,
     random_state=RANDOM_STATE,
-    stratify=y_bins
+    stratify=y_binary
 )
 
-# лог-простір
-y_train_log = np.log1p(y_train)
-y_val_log   = np.log1p(y_val)
-
-# =====================================================
-# 2️⃣ CATEGORICAL HANDLING
-# =====================================================
-
-cat_cols = [c for c in X_train.columns 
-            if X_train[c].dtype.name in ("object", "category")]
+# categorical columns
+cat_cols = [c for c in X_train.columns if X_train[c].dtype.name in ("object", "category")]
 
 for c in cat_cols:
     X_train[c] = X_train[c].astype("category")
-    X_val[c]   = X_val[c].astype("category")
+    X_val[c] = X_val[c].astype("category")
 
-# =====================================================
-# 3️⃣ LIGHTGBM
-# =====================================================
+# ==========================================================
+# 2. STAGE 1 — CLASSIFICATION (Zero vs Positive)
+# ==========================================================
 
-reg = lgb.LGBMRegressor(
-    objective="huber",
-    n_estimators=5000,
+clf = lgb.LGBMClassifier(
+    objective="binary",
+    n_estimators=2000,
     learning_rate=0.03,
-    num_leaves=127,
-    max_depth=-1,
-    min_child_samples=15,
+    num_leaves=128,
+    min_child_samples=20,
     subsample=0.8,
     colsample_bytree=0.8,
-    categorical_feature=cat_cols,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+clf.fit(
+    X_train,
+    y_bin_train,
+    eval_set=[(X_val, y_bin_val)],
+    eval_metric="auc",
+    callbacks=[lgb.early_stopping(200)]
+)
+
+# Predict probability of positive
+p_positive_val = clf.predict_proba(X_val)[:, 1]
+
+print("="*60)
+print("STAGE 1 — CLASSIFICATION")
+print("AUC:", roc_auc_score(y_bin_val, p_positive_val))
+print(classification_report(y_bin_val, p_positive_val > 0.5))
+print("="*60)
+
+# ==========================================================
+# 3. STAGE 2 — REGRESSION (Only Positive Targets)
+# ==========================================================
+
+mask_train_pos = y_train > threshold
+mask_val_pos = y_val > threshold
+
+X_train_pos = X_train[mask_train_pos]
+y_train_pos = y_train[mask_train_pos]
+
+X_val_pos = X_val[mask_val_pos]
+y_val_pos = y_val[mask_val_pos]
+
+reg = lgb.LGBMRegressor(
+    objective="tweedie",
+    tweedie_variance_power=1.3,
+    n_estimators=4000,
+    learning_rate=0.03,
+    num_leaves=256,
+    min_child_samples=5,
+    subsample=0.8,
+    colsample_bytree=0.8,
     random_state=RANDOM_STATE,
     n_jobs=-1
 )
 
 reg.fit(
-    X_train,
-    y_train_log,
-    eval_set=[(X_val, y_val_log)],
-    eval_metric="l1",
-    callbacks=[lgb.early_stopping(200)]
+    X_train_pos,
+    y_train_pos,
+    eval_set=[(X_val_pos, y_val_pos)],
+    eval_metric="mae",
+    callbacks=[lgb.early_stopping(300)]
 )
 
-# =====================================================
-# 4️⃣ BASE PREDICTIONS
-# =====================================================
+# Regression prediction (only for positive validation rows)
+y_reg_val_pos = reg.predict(X_val)
 
-y_pred_log = reg.predict(X_val)
+# ==========================================================
+# 4. FINAL COMBINED PREDICTION
+# ==========================================================
 
-# =====================================================
-# 5️⃣ POST-CALIBRATION (ISOTONIC)
-# =====================================================
+# expected value approach
+y_pred_val = p_positive_val * y_reg_val_pos
 
-iso = IsotonicRegression(out_of_bounds="clip")
+# ==========================================================
+# 5. METRICS
+# ==========================================================
 
-iso.fit(y_pred_log, y_val_log)
+mae = mean_absolute_error(y_val, y_pred_val)
+r2 = r2_score(y_val, y_pred_val)
 
-y_pred_log_cal = iso.predict(y_pred_log)
-
-# =====================================================
-# 6️⃣ BACK TO ORIGINAL SCALE
-# =====================================================
-
-y_val_orig      = np.expm1(y_val_log)
-y_pred_orig     = np.expm1(y_pred_log)
-y_pred_cal_orig = np.expm1(y_pred_log_cal)
-
-# =====================================================
-# 7️⃣ METRICS
-# =====================================================
-
-print("="*60)
-print("LOG SPACE METRICS")
-print("="*60)
-
-print("MAE_log      :", mean_absolute_error(y_val_log, y_pred_log))
-print("MAE_log_cal  :", mean_absolute_error(y_val_log, y_pred_log_cal))
-print("R2_log       :", r2_score(y_val_log, y_pred_log))
-
-print("="*60)
-print("ORIGINAL SCALE METRICS")
-print("="*60)
-
-print("MAE base     :", mean_absolute_error(y_val_orig, y_pred_orig))
-print("MAE calibrated:", mean_absolute_error(y_val_orig, y_pred_cal_orig))
-print("MedAE        :", median_absolute_error(y_val_orig, y_pred_orig))
-
-# =====================================================
-# 8️⃣ VALIDATION RESULTS DF
-# =====================================================
-
-validation_results = pd.DataFrame({
-    "IDENTIFYCODE": X_val.index,
-    "True_Value": y_val_orig,
-    "Predicted_Base": y_pred_orig,
-    "Predicted_Calibrated": y_pred_cal_orig,
-    "Abs_Error_Base": np.abs(y_val_orig - y_pred_orig),
-    "Abs_Error_Cal": np.abs(y_val_orig - y_pred_cal_orig)
+# bucket analysis
+val_df = pd.DataFrame({
+    "true": y_val,
+    "pred": y_pred_val
 })
 
-# =====================================================
-# 9️⃣ DIAGNOSTICS
-# =====================================================
+val_df["bucket"] = pd.qcut(val_df["true"], q=10, duplicates="drop")
 
-plt.figure(figsize=(6,6))
-plt.scatter(y_val_log, y_pred_log, alpha=0.3, s=10)
-plt.plot([y_val_log.min(), y_val_log.max()],
-         [y_val_log.min(), y_val_log.max()],
-         "r--")
-plt.title("Log Space: Base Model")
-plt.show()
+bucket_stats = val_df.groupby("bucket").agg(
+    count=("true", "count"),
+    mae=("true", lambda x: np.mean(np.abs(x - val_df.loc[x.index, "pred"])))
+)
 
-plt.figure(figsize=(6,6))
-plt.scatter(y_val_log, y_pred_log_cal, alpha=0.3, s=10)
-plt.plot([y_val_log.min(), y_val_log.max()],
-         [y_val_log.min(), y_val_log.max()],
-         "r--")
-plt.title("Log Space: Calibrated")
-plt.show()
+print("="*60)
+print("FINAL TWO-STAGE MODEL METRICS")
+print("MAE:", round(mae, 2))
+print("R2:", round(r2, 4))
+print("="*60)
+print(bucket_stats)
 
-residuals = y_val_log - y_pred_log
-plt.figure(figsize=(6,4))
-plt.hist(residuals, bins=80)
-plt.title("Residual Distribution (log space)")
-plt.show()
+# ==========================================================
+# 6. OPTIONAL — HIGH VALUE ANALYSIS
+# ==========================================================
+
+high_threshold = np.percentile(y_val, 90)
+
+mask_high = y_val >= high_threshold
+
+mae_high = mean_absolute_error(
+    y_val[mask_high],
+    y_pred_val[mask_high]
+)
+
+print("="*60)
+print("HIGH 10% SEGMENT MAE:", round(mae_high, 2))
+print("="*60)
