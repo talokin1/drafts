@@ -1,166 +1,158 @@
-import numpy as np
 import pandas as pd
-import lightgbm as lgb
-from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, mean_absolute_error, r2_score, average_precision_score
-import matplotlib.pyplot as plt
+import numpy as np
 
-# ==========================================
-# 1. Custom Two-Stage Model Class
-# ==========================================
-class TwoStageLGBM(BaseEstimator, RegressorMixin):
-    def __init__(self, clf_params=None, reg_params=None, zero_threshold=0.5):
-        """
-        zero_threshold: поріг ймовірності класифікатора. 
-        Якщо P(non-zero) < threshold, ставимо 0.
-        """
-        self.clf_params = clf_params if clf_params else {}
-        self.reg_params = reg_params if reg_params else {}
-        self.zero_threshold = zero_threshold
-        
-        self.classifier = None
-        self.regressor = None
-        self.is_fitted = False
+ID_COL = "IDENTIFYCODE"
+TRUE_COL = "True_Value"
+PRED_COL = "Predicted"
 
-    def fit(self, X, y, cat_features=None):
-        # --- Stage 1: Classification (Zero vs Non-Zero) ---
-        y_binary = (y > 0).astype(int)
-        
-        print(f"Training Classifier... (Balance: {y_binary.value_counts(normalize=True).to_dict()})")
-        
-        self.classifier = lgb.LGBMClassifier(**self.clf_params)
-        self.classifier.fit(
-            X, y_binary, 
-            categorical_feature=cat_features if cat_features else 'auto',
-            verbose=False
+# 1. Використовуємо DIVISION_CODE для агрегації макро-індустрій
+INDUSTRY_COL = "DIVISION_CODE"
+OPF_COL = "OPF_CODE"
+
+OUTPUT_FILE = "Business_Model_Report_v5_Final.xlsx"
+
+df = validation_results.copy()
+
+# Перевірка наявності ID
+if ID_COL not in df.columns:
+    df = df.reset_index().rename(columns={"index": ID_COL})
+
+# Підтягуємо фічі з X_val
+if ID_COL not in X_val.columns and X_val.index.name == ID_COL:
+    df = df.merge(
+        X_val[[INDUSTRY_COL, OPF_COL]],
+        left_on=ID_COL,
+        right_index=True,
+        how="left"
+    )
+else:
+    df = df.merge(
+        X_val[[ID_COL, INDUSTRY_COL, OPF_COL]],
+        on=ID_COL,
+        how="left"
+    )
+
+df["Abs_Error"] = (df[TRUE_COL] - df[PRED_COL]).abs()
+
+# 2. Нові бакети з акцентом на Micro (1.5k) та Corp (2.5k)
+bins = [-1, 1000, 2500, 10000]
+bins += list(range(20000, 100001, 10000))
+bins += [1000000, np.inf]
+bins = sorted(set(bins))
+
+labels = []
+for i in range(len(bins)-1):
+    low = bins[i]
+    high = bins[i+1]
+    
+    if high == np.inf:
+        labels.append(f"{int(low/1000)}k+")
+    elif low == -1:
+        labels.append(f"0-{high/1000:g}k") # Використовуємо :g щоб відкинути нулі після крапки
+    else:
+        labels.append(f"{low/1000:g}k-{high/1000:g}k")
+
+df["Income_Bucket_TRUE"] = pd.cut(df[TRUE_COL], bins=bins, labels=labels)
+df["Income_Bucket_PRED"] = pd.cut(df[PRED_COL], bins=bins, labels=labels)
+
+def bucket_summary(data, bucket_col, value_col):
+    table = (
+        data.groupby(bucket_col, observed=False)
+        .agg(
+            Clients=(ID_COL, "count"),
+            Avg_Income=(value_col, "mean"),
+            Median_Income=(value_col, "median")
         )
+        .reset_index()
+    )
+    return table.round(2)
 
-        # --- Stage 2: Regression (Magnitude for Non-Zeros) ---
-        # Вибираємо тільки ті рядки, де реальне значення > 0
-        mask_nonzero = y > 0
-        X_nonzero = X.loc[mask_nonzero]
-        y_nonzero_log = np.log1p(y[mask_nonzero]) # Log-transform target
-        
-        print(f"Training Regressor on {len(X_nonzero)} non-zero samples...")
-        
-        self.regressor = lgb.LGBMRegressor(**self.reg_params)
-        self.regressor.fit(
-            X_nonzero, y_nonzero_log,
-            categorical_feature=cat_features if cat_features else 'auto',
-            verbose=False
+bucket_true = bucket_summary(df, "Income_Bucket_TRUE", TRUE_COL)
+bucket_pred = bucket_summary(df, "Income_Bucket_PRED", PRED_COL)
+
+
+# 3. Звіт по індустріям та ОПФ (БЕЗ втрати клієнтів)
+def segment_report(data, group_col):
+    high_threshold = data[TRUE_COL].quantile(0.8)
+    data["High_Value"] = data[TRUE_COL] >= high_threshold
+    
+    g = (
+        data.groupby(group_col, observed=False)
+        .agg(
+            Clients=(ID_COL, "count"),
+            Avg_Income=(TRUE_COL, "mean"),
+            Median_Income=(TRUE_COL, "median"),
+            P90_Income=(TRUE_COL, lambda x: x.quantile(0.9)),
+            Avg_Predicted=(PRED_COL, "mean"),
+            Avg_Error=("Abs_Error", "mean"),
         )
-        
-        self.is_fitted = True
-        return self
+        .reset_index()
+    )
+    
+    g["Prediction_Gap"] = g["Avg_Predicted"] - g["Avg_Income"]
+    
+    # Фільтр g = g[g["Clients"] >= 10] видалено, щоб усі клієнти потрапили у звіт.
+    
+    return g.sort_values("Avg_Income", ascending=False).round(2)
 
-    def predict(self, X):
-        if not self.is_fitted:
-            raise Exception("Model not fitted yet!")
-            
-        # 1. Predict probability of being non-zero
-        prob_nonzero = self.classifier.predict_proba(X)[:, 1]
-        
-        # 2. Predict value (in log scale) assuming it is non-zero
-        pred_log = self.regressor.predict(X)
-        pred_value = np.expm1(pred_log) # Inverse log transform
-        
-        # 3. Combine strategies
-        # Варіант А: Жорсткий поріг (Hard Threshold)
-        final_pred = np.where(prob_nonzero >= self.zero_threshold, pred_value, 0)
-        
-        # Варіант Б (можна розкоментувати): Очікуване значення (Expected Value)
-        # final_pred = prob_nonzero * pred_value 
-        
-        return final_pred, prob_nonzero
+industry_table = segment_report(df.copy(), INDUSTRY_COL)
+opf_table = segment_report(df.copy(), OPF_COL)
 
-# ==========================================
-# 2. Setup & Training
-# ==========================================
 
-# Припустимо, що df - це твій датафрейм, а цільова колонка 'Assets'
-# X = df.drop('Assets', axis=1)
-# y = df['Assets']
+# 4. Експорт у Excel
+with pd.ExcelWriter(OUTPUT_FILE, engine="xlsxwriter") as writer:
+    workbook = writer.book
+    header_fmt = workbook.add_format({"bold": True, "bg_color": "#D7E4BC"})
+    money_fmt = workbook.add_format({"num_format": "#,##0.00"})
+    percent_fmt = workbook.add_format({"num_format": "0.00%"})
+    
+    # --- Sheet 1: Validation Report ---
+    sheet1 = "Validation_Report"
+    main_cols = [
+        ID_COL, TRUE_COL, PRED_COL, "Abs_Error", 
+        "Income_Bucket_TRUE", "Income_Bucket_PRED"
+    ]
+    
+    df[main_cols].to_excel(writer, sheet_name=sheet1, startrow=1, index=False)
+    bucket_true.to_excel(writer, sheet_name=sheet1, startrow=1, startcol=8, index=False)
+    bucket_pred.to_excel(writer, sheet_name=sheet1, startrow=1, startcol=14, index=False)
+    
+    ws1 = writer.sheets[sheet1]
+    ws1.write(0, 0, "Client-Level Prediction", header_fmt)
+    ws1.write(0, 8, "Buckets by TRUE", header_fmt)
+    ws1.write(0, 14, "Buckets by PREDICTED", header_fmt)
+    
+    for col_num, col_name in enumerate(main_cols):
+        if col_name in [TRUE_COL, PRED_COL, "Abs_Error"]:
+            ws1.set_column(col_num, col_num, 18, money_fmt)
+    ws1.freeze_panes(2, 0)
+    
+    # --- Sheet 2: Industry Insights ---
+    sheet2 = "Industry_Insights"
+    industry_table.to_excel(writer, sheet_name=sheet2, startrow=1, index=False)
+    
+    ws2 = writer.sheets[sheet2]
+    ws2.write(0, 0, "Industry Profitability Report", header_fmt)
+    
+    for col_num, col_name in enumerate(industry_table.columns):
+        if any(keyword in col_name for keyword in ["Income", "Predicted", "Error", "Gap"]):
+            ws2.set_column(col_num, col_num, 18, money_fmt)
+        if "High_Value_%" in col_name:
+            ws2.set_column(col_num, col_num, 15, percent_fmt)
+    ws2.freeze_panes(2, 0)
+    
+    # --- Sheet 3: OPF Insights ---
+    sheet3 = "OPF_Insights"
+    opf_table.to_excel(writer, sheet_name=sheet3, startrow=1, index=False)
+    
+    ws3 = writer.sheets[sheet3]
+    ws3.write(0, 0, "OPF Profitability Report", header_fmt)
+    
+    for col_num, col_name in enumerate(opf_table.columns):
+        if any(keyword in col_name for keyword in ["Income", "Predicted", "Error", "Gap"]):
+            ws3.set_column(col_num, col_num, 18, money_fmt)
+        if "High_Value_%" in col_name:
+            ws3.set_column(col_num, col_num, 15, percent_fmt)
+    ws3.freeze_panes(2, 0)
 
-# *ВАЖЛИВО*: Стратифікація при спліті має бути по бінарній цілі, 
-# бо клас 1 дуже малий.
-y_binary_strat = (y > 0).astype(int)
-
-X_train, X_val, y_train, y_val = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y_binary_strat
-)
-
-# Визначаємо категоріальні колонки
-cat_cols = [c for c in X_train.columns if X_train[c].dtype.name in ("object", "category")]
-for c in cat_cols:
-    X_train[c] = X_train[c].astype("category")
-    X_val[c] = X_val[c].astype("category")
-
-# Параметри моделей
-clf_params = {
-    'objective': 'binary',
-    'metric': 'auc',
-    'n_estimators': 2000,
-    'learning_rate': 0.03,
-    'max_depth': 6,
-    'class_weight': 'balanced', # КРИТИЧНО ВАЖЛИВО для 30к vs 1.8к
-    'random_state': 42,
-    'n_jobs': -1
-}
-
-reg_params = {
-    'objective': 'regression', # Або 'huber' для стійкості до викидів
-    'metric': 'mae',
-    'n_estimators': 2000,
-    'learning_rate': 0.05,
-    'num_leaves': 31,
-    'random_state': 42,
-    'n_jobs': -1
-}
-
-# Ініціалізація та навчання
-model = TwoStageLGBM(clf_params, reg_params, zero_threshold=0.5)
-model.fit(X_train, y_train, cat_features=cat_cols)
-
-# ==========================================
-# 3. Evaluation
-# ==========================================
-
-# Отримуємо прогнози
-y_pred, prob_nonzero = model.predict(X_val)
-
-# --- Metrics ---
-print("="*60)
-print("STAGE 1: Classification Metrics (Zero vs Non-Zero)")
-print("="*60)
-y_val_binary = (y_val > 0).astype(int)
-print(f"ROC AUC: {roc_auc_score(y_val_binary, prob_nonzero):.4f}")
-print(f"PR AUC : {average_precision_score(y_val_binary, prob_nonzero):.4f} (Focus on this!)")
-
-print("\n" + "="*60)
-print("STAGE 2: Final Regression Metrics (Combined)")
-print("="*60)
-print(f"MAE: {mean_absolute_error(y_val, y_pred):,.2f}")
-print(f"R2 : {r2_score(y_val, y_pred):.4f}")
-
-# --- Plotting ---
-plt.figure(figsize=(12, 5))
-
-# Plot 1: True vs Predicted (Log Scale for visibility)
-plt.subplot(1, 2, 1)
-plt.scatter(np.log1p(y_val), np.log1p(y_pred), alpha=0.3, s=10)
-plt.plot([0, np.max(np.log1p(y_val))], [0, np.max(np.log1p(y_val))], 'r--')
-plt.xlabel('True Values (log1p)')
-plt.ylabel('Predicted Values (log1p)')
-plt.title('True vs Predicted (Log Scale)')
-
-# Plot 2: Residuals for Non-Zero predictions
-mask_val_nonzero = y_val > 0
-plt.subplot(1, 2, 2)
-residuals = np.log1p(y_val[mask_val_nonzero]) - np.log1p(y_pred[mask_val_nonzero])
-plt.hist(residuals, bins=50, alpha=0.7)
-plt.title('Residuals Distribution (Only Non-Zeros)')
-plt.xlabel('Log Error')
-
-plt.tight_layout()
-plt.show()
+print(f"Report saved to {OUTPUT_FILE}")
