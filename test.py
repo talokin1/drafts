@@ -1,20 +1,24 @@
-# 1. Знаходимо поріг на оригінальних даних
-q99 = df[TARGET_NAME].quantile(0.99)
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# 2. Робимо копію, щоб не зламати оригінал
 df_ = df.copy()
 
-# 3. ВІНЗОРИЗАЦІЯ: обмежуємо зверху, але НЕ видаляємо рядки!
-df_[TARGET_NAME] = df_[TARGET_NAME].clip(upper=q99)
+# 1. Спочатку відкидаємо тих, хто не має кредитів (або має мікрозалишки)
+# У твоєму коді це було еквівалентно log1p(x) >= 1, тобто x >= e^1 - 1 (приблизно 1.71)
+df_active = df_[df_[TARGET_NAME] > 2].copy() # Відсіюємо нулі
 
-# 4. Вже тепер логарифмуємо
-df_["LOG_TARGET"] = np.log1p(df_[TARGET_NAME])
+# 2. Рахуємо 99-й перцентиль ТІЛЬКИ по активних позичальниках
+q99 = df_active[TARGET_NAME].quantile(0.99)
 
-# 5. Відкидаємо нулі або дрібний шум (це залишаємо, як у тебе)
-df_ = df_[df_["LOG_TARGET"] >= 1]
+# 3. Вінзоризація
+df_active[TARGET_NAME] = df_active[TARGET_NAME].clip(upper=q99)
 
-# Дивимось на розподіл
+# 4. Логарифмування
+df_active["LOG_TARGET"] = np.log1p(df_active[TARGET_NAME])
+
+# Дивимось на результат
 plt.figure(figsize=(8,6))
-sns.histplot(df_["LOG_TARGET"], bins=200)
-plt.title("Winsorized & Logged Target")
+sns.histplot(df_active["LOG_TARGET"], bins=200)
+plt.title("Winsorized & Logged Target (Active Portfolio Only)")
 plt.show()
