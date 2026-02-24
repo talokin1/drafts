@@ -1,22 +1,20 @@
-# 0-10k: крок 2.5k | 10k-25k: крок 5k | 25k-100k: крок 10k
-bins = [-1, 2500, 5000, 7500, 10000, 15000, 20000, 25000]
-bins += list(range(30000, 100001, 10000))
-bins += [1000000, np.inf]
-bins = sorted(set(bins))
+# 1. Знаходимо поріг на оригінальних даних
+q99 = df[TARGET_NAME].quantile(0.99)
 
-labels = []
-for i in range(len(bins)-1):
-    low = bins[i]
-    high = bins[i+1]
-    
-    if high == np.inf:
-        labels.append(f"{int(low/1000)}k+")
-    elif low == -1:
-        labels.append(f"0-{high/1000:g}k")
-    else:
-        labels.append(f"{low/1000:g}k-{high/1000:g}k")
+# 2. Робимо копію, щоб не зламати оригінал
+df_ = df.copy()
 
-df["Income_Bucket_TRUE"] = pd.cut(df[TRUE_COL], bins=bins, labels=labels)
-df["Income_Bucket_PRED"] = pd.cut(df[PRED_COL], bins=bins, labels=labels)
+# 3. ВІНЗОРИЗАЦІЯ: обмежуємо зверху, але НЕ видаляємо рядки!
+df_[TARGET_NAME] = df_[TARGET_NAME].clip(upper=q99)
 
+# 4. Вже тепер логарифмуємо
+df_["LOG_TARGET"] = np.log1p(df_[TARGET_NAME])
 
+# 5. Відкидаємо нулі або дрібний шум (це залишаємо, як у тебе)
+df_ = df_[df_["LOG_TARGET"] >= 1]
+
+# Дивимось на розподіл
+plt.figure(figsize=(8,6))
+sns.histplot(df_["LOG_TARGET"], bins=200)
+plt.title("Winsorized & Logged Target")
+plt.show()
