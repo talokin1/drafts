@@ -1,65 +1,63 @@
 import pandas as pd
 import numpy as np
+import os
 
-# Припустимо, df_importance - це датафрейм з попереднього кроку
-# df - твій оригінальний датафрейм
-# TARGET_NAME - назва колонки з реальними комісіями
-
-def create_business_excel(df, df_importance, target_col, top_n=10, filename="Business_Insights_Report.xlsx"):
-    # Беремо назви топ-N фічей
+def update_business_excel(df, df_importance, target_col, top_n=4, filename="Validation_Report.xlsx"):
+    # Беремо тільки перші 4 найважливіші ознаки
     top_features = df_importance['Feature'].head(top_n).tolist()
     
-    # Використовуємо ExcelWriter для створення кількох аркушів
-    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+    # Режим 'a' (append) додає нові аркуші, не видаляючи старі
+    mode = 'a' if os.path.exists(filename) else 'w'
+    
+    # if_sheet_exists='replace' дозволяє перезаписати аркуш фічі, якщо ти запускаєш код вдруге
+    engine_kwargs = {'if_sheet_exists': 'replace'} if mode == 'a' else {}
+    
+    with pd.ExcelWriter(filename, engine='openpyxl', mode=mode, **engine_kwargs) as writer:
         
         for feature in top_features:
             print(f"Обробка фічі: {feature}...")
             
-            # Перевіряємо, чи фіча є категоріальною (або має мало унікальних значень)
-            is_categorical = pd.api.types.is_categorical_dtype(df[feature]) or \
-                             pd.api.types.is_object_dtype(df[feature]) or \
-                             df[feature].nunique() < 20
-            
-            if is_categorical:
-                # Агрегація для категорій
-                agg_df = df.groupby(feature)[target_col].agg(
-                    Кількість_Клієнтів='count',
-                    Медіанний_Дохід='median',
-                    Середній_Дохід='mean',
-                    Сумарний_Дохід='sum'
-                ).reset_index()
+            # 1. Специфічна логіка для кількості співробітників (відновлення після log1p)
+            if feature == 'NB_EMPL':
+                grouping_col = np.expm1(df[feature]).round().astype(int)
                 
-                # Сортуємо за сумарним доходом, щоб лідери були зверху
-                agg_df = agg_df.sort_values(by='Сумарний_Дохід', ascending=False)
+            # 2. Логіка для категоріальних ознак (напр., DIVISION_CODE)
+            elif pd.api.types.is_categorical_dtype(df[feature]) or df[feature].nunique() < 50:
+                grouping_col = df[feature]
                 
+            # 3. Логіка для інших числових ознак (без інтервалів, просто округлення)
             else:
-                # Агрегація для неперервних змінних (розбиття на 10 децилів)
-                # duplicates='drop' потрібен, якщо багато однакових значень (напр., нулів)
-                bins = pd.qcut(df[feature], q=10, duplicates='drop')
-                
-                agg_df = df.groupby(bins)[target_col].agg(
-                    Кількість_Клієнтів='count',
-                    Медіанний_Дохід='median',
-                    Середній_Дохід='mean',
-                    Сумарний_Дохід='sum'
-                ).reset_index()
-                
-                # Перетворюємо інтервали у зрозумілий текст для Excel
-                agg_df[feature] = agg_df[feature].astype(str)
-                
-            # Рахуємо частку (%) від загальної суми для кращого бізнес-розуміння
+                grouping_col = df[feature].round(0)
+            
+            # Агрегація
+            agg_df = df.groupby(grouping_col)[target_col].agg(
+                Кількість_Клієнтів='count',
+                Медіанний_Дохід='median',
+                Середній_Дохід='mean',
+                Сумарний_Дохід='sum'
+            ).reset_index()
+            
+            # Перейменування колонки для зрозумілості
+            agg_df = agg_df.rename(columns={feature: f'{feature}_Value'})
+            
+            # Сортування: індустрії логічніше сортувати за грошима, а цифри - за зростанням
+            if feature == 'DIVISION_CODE':
+                agg_df = agg_df.sort_values(by='Сумарний_Дохід', ascending=False)
+            else:
+                agg_df = agg_df.sort_values(by=f'{feature}_Value', ascending=True)
+            
+            # Рахуємо відсотки та округлюємо фінанси
             total_income = agg_df['Сумарний_Дохід'].sum()
             agg_df['Частка_в_загальному_доході_%'] = (agg_df['Сумарний_Дохід'] / total_income * 100).round(2)
             
-            # Округлюємо фінансові колонки до 2 знаків
             cols_to_round = ['Медіанний_Дохід', 'Середній_Дохід', 'Сумарний_Дохід']
             agg_df[cols_to_round] = agg_df[cols_to_round].round(2)
             
-            # Зберігаємо на окремий аркуш. Обрізаємо назву до 31 символу (обмеження Excel)
+            # Збереження на окремий аркуш
             sheet_name = str(feature)[:31]
             agg_df.to_excel(writer, sheet_name=sheet_name, index=False)
             
-    print(f"\n✅ Готово! Звіт збережено у файл: {filename}")
+    print(f"\n✅ Готово! Дані додано у файл: {filename} (старі аркуші збережено)")
 
-# Виклик функції
-create_business_excel(df, df_importance, TARGET_NAME, top_n=15)
+# Зверни увагу: зміни назву файлу на ту, де лежить твій Validation_Report
+update_business_excel(df_for_report, df_importance, target_col=TARGET_NAME, top_n=4, filename="твоя_назва_файлу.xlsx")
