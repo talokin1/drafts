@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as mtick
 
-# Data from your Excel summary
+# Дані
 data = {
     'Month': ['03', '04', '05', '06', '07', '08', '09', '10', '11', '12'],
     'Taken': [12670, 15927, 4064, 2720, 3029, 2933, 2244, 2373, 2263, 2004],
@@ -14,65 +14,67 @@ data = {
 }
 df = pd.DataFrame(data)
 
-# Corporate theme styling
 sns.set_theme(style="whitegrid")
 plt.rcParams['font.family'] = 'sans-serif'
 
-fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(11, 10), dpi=150)
-fig.tight_layout(pad=6.0)
+# Кольори
+color_bar = '#4F81BD'
+color_line = '#C0504D'
+color_success = '#9BBB59'
+color_fail = '#808080'
 
 # ==========================================
-# Chart 1: Processing Volumes & Conversion Rate
+# ГРАФІК 1: Об'єми та Конверсія (Окремий файл)
 # ==========================================
-color_bar = '#4F81BD' # Corporate Blue
-color_line = '#C0504D' # Dark Red
+fig1, ax1 = plt.subplots(figsize=(6.5, 4.5), dpi=150) # Компактний розмір для 1/4 слайду
 
-# Bars: Clients taken into work
-ax1.bar(df['Month'], df['Taken'], color=color_bar, alpha=0.75, label='Clients in Work (Volume)')
-ax1.set_ylabel('Number of Clients', color=color_bar, fontsize=11, fontweight='bold')
-ax1.tick_params(axis='y', labelcolor=color_bar)
-ax1.set_title('Processing Volumes & Conversion Rate Dynamics', fontsize=14, fontweight='bold', pad=15)
+ax1.bar(df['Month'], df['Taken'], color=color_bar, alpha=0.75, label='Clients in Work')
+ax1.set_ylabel('Number of Clients', color=color_bar, fontsize=10, fontweight='bold')
+ax1.tick_params(axis='y', labelcolor=color_bar, labelsize=9)
+ax1.tick_params(axis='x', labelsize=9)
+ax1.set_title('Processing Volumes & Conversion Rate Dynamics', fontsize=12, fontweight='bold', pad=10)
 
-# Line: Conversion Rate (Secondary Y-axis)
 ax2 = ax1.twinx()
-ax2.plot(df['Month'], df['Conv_Rate'], color=color_line, marker='o', linewidth=2.5, markersize=8, label='Conversion Rate (CR)')
-ax2.set_ylabel('Conversion Rate', color=color_line, fontsize=11, fontweight='bold')
-ax2.tick_params(axis='y', labelcolor=color_line)
+ax2.plot(df['Month'], df['Conv_Rate'], color=color_line, marker='o', linewidth=2, markersize=6, label='Conversion Rate')
+ax2.set_ylabel('Conversion Rate', color=color_line, fontsize=10, fontweight='bold')
+ax2.tick_params(axis='y', labelcolor=color_line, labelsize=9)
 ax2.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=2))
 
-# Add data labels to the line
 for i, txt in enumerate(df['Conv_Rate']):
     ax2.annotate(f"{txt:.2%}", (df['Month'][i], df['Conv_Rate'][i]), 
-                 textcoords="offset points", xytext=(0,10), ha='center', fontsize=9, color=color_line, fontweight='bold')
+                 textcoords="offset points", xytext=(0,8), ha='center', fontsize=8, color=color_line, fontweight='bold')
 
 ax1.grid(False)
 ax2.grid(False)
-
-# Add combined legend for Chart 1
 lines_1, labels_1 = ax1.get_legend_handles_labels()
 lines_2, labels_2 = ax2.get_legend_handles_labels()
-ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', frameon=True, fontsize=10)
+ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', frameon=True, fontsize=8)
+
+plt.tight_layout()
+fig1.savefig('chart_1_volumes.png', transparent=True, bbox_inches='tight') # Зберігаємо з прозорим фоном
+plt.close(fig1)
 
 # ==========================================
-# Chart 2: Model Discrimination Ability
+# ГРАФІК 2: Дискримінаційна здатність (Окремий файл)
 # ==========================================
-color_success = '#9BBB59' # Muted Green
-color_fail = '#808080'    # Grey
+fig2, ax3 = plt.subplots(figsize=(6.5, 4.5), dpi=150)
 
-ax3.plot(df['Month'], df['Prop_Acq'], marker='s', color=color_success, linewidth=2.5, markersize=8, label='Avg Propensity of Acquired')
-ax3.plot(df['Month'], df['Prop_Not_Acq'], marker='^', color=color_fail, linewidth=2.5, linestyle='--', markersize=8, label='Avg Propensity of Not Acquired')
+ax3.plot(df['Month'], df['Prop_Acq'], marker='s', color=color_success, linewidth=2, markersize=6, label='Propensity (Acquired)')
+ax3.plot(df['Month'], df['Prop_Not_Acq'], marker='^', color=color_fail, linewidth=2, linestyle='--', markersize=6, label='Propensity (Not Acquired)')
 
-ax3.set_title('Model Discrimination Ability (Propensity Score)', fontsize=14, fontweight='bold', pad=15)
-ax3.set_ylabel('Average Propensity Score', fontsize=11)
+ax3.set_title('Model Discrimination Ability', fontsize=12, fontweight='bold', pad=10)
+ax3.set_ylabel('Average Propensity Score', fontsize=10)
+ax3.tick_params(axis='both', labelsize=9)
 ax3.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
-ax3.legend(loc='upper right', frameon=True, fontsize=10)
+ax3.legend(loc='upper right', frameon=True, fontsize=8)
 
-# Fill between lines to highlight areas where the model succeeds vs fails
 ax3.fill_between(df['Month'], df['Prop_Acq'], df['Prop_Not_Acq'], 
                  where=(df['Prop_Acq'] >= df['Prop_Not_Acq']), interpolate=True, color=color_success, alpha=0.15)
 ax3.fill_between(df['Month'], df['Prop_Acq'], df['Prop_Not_Acq'], 
                  where=(df['Prop_Acq'] < df['Prop_Not_Acq']), interpolate=True, color='#C0504D', alpha=0.1)
 
-# Save the plot
-plt.savefig('business_slide_charts.png', bbox_inches='tight')
-plt.show()
+plt.tight_layout()
+fig2.savefig('chart_2_model.png', transparent=True, bbox_inches='tight')
+plt.close(fig2)
+
+print("Два окремі графіки збережено!")
