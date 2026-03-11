@@ -1,114 +1,69 @@
 import pandas as pd
-import os
-import glob
 import numpy as np
-import warnings
-warnings.filterwarnings('ignore') # Вимикаємо зайві попередження від Excel
 
-folder_path = 'potential_clients/' # Вкажи свій шлях
-zkp_file = 'ZKP_PROJECT_BY_MARCH.xlsx'
+# 1. Завантаження множин
+# Вкажи свої реальні шляхи до файлів, які ти згенерував
+df_potential = pd.read_csv(r"C:\Projects\Alina Kinash\data_for_dashboard\potential_clients.csv")
+df_engaged = pd.read_csv(r"C:\Projects\Alina Kinash\data_for_dashboard\engaged_clients_by_banks.csv") # тут був без розширення, додав .csv про всяк випадок
+df_income = pd.read_csv(r"C:\Projects\Alina Kinash\data_for_dashboard\engaged_with_income.csv")
 
-print("Починаю глибоку очистку та зведення даних...")
-
-# ==========================================
-# 1. Формуємо підмножину потенційних клієнтів (P)
-# ==========================================
-all_files = glob.glob(os.path.join(folder_path, "*.xlsx"))
-df_p_list = []
-
-for file in all_files:
-    df_temp = pd.read_excel(file)
-    bank_name = os.path.basename(file).replace('_clients.xlsx', '').replace('.xlsx', '')
-    
-    # ФІКС 1: Динамічний пошук колонки з ID (ігноруємо регістр і пробіли)
-    id_col_name = None
-    for col in df_temp.columns:
-        if str(col).strip().upper() in ['IDENTIFYCODE', 'CONTRAGENTID', 'ID', 'IDENTIFY_CODE']:
-            id_col_name = col
-            break
-    
-    # Якщо не знайшли за назвою, беремо першу колонку за замовчуванням
-    if id_col_name is None:
-        id_col_name = df_temp.columns[0]
-        
-    # Залишаємо тільки ID і приводимо назву до стандарту
-    temp_subset = df_temp[[id_col_name]].copy()
-    temp_subset.rename(columns={id_col_name: 'IDENTIFYCODE'}, inplace=True)
-    
-    # ФІКС 2: Жорстка типізація. Перетворюємо все на чистий текст, видаляємо ".0" і пробіли
-    temp_subset['IDENTIFYCODE'] = temp_subset['IDENTIFYCODE'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-    
-    temp_subset['Source_Bank'] = bank_name
-    df_p_list.append(temp_subset)
-
-# Об'єднуємо всі банки
-df_all_potential = pd.concat(df_p_list, ignore_index=True)
-
-# ФІКС 3: Обробка перетинів. Якщо клієнт є у 2+ банках, з'єднуємо їх через плюсик
-df_p = df_all_potential.groupby('IDENTIFYCODE')['Source_Bank'].apply(
-    lambda x: ' + '.join(sorted(x.unique()))
-).reset_index()
-
+# Приведення ідентифікаторів до спільного текстового формату (щоб уникнути помилок типу 123.0 != "123")
+df_potential['IDENTIFYCODE'] = df_potential['IDENTIFYCODE'].astype(str).str.replace(r'\.0$', '', regex=True)
+df_engaged['IDENTIFYCODE'] = df_engaged['IDENTIFYCODE'].astype(str).str.replace(r'\.0$', '', regex=True)
+df_engaged['CONTRAGENTID'] = df_engaged['CONTRAGENTID'].astype(str).str.replace(r'\.0$', '', regex=True)
+df_income['CONTRAGENTID'] = df_income['CONTRAGENTID'].astype(str).str.replace(r'\.0$', '', regex=True)
 
 # ==========================================
-# 2. Формуємо підмножину залучених клієнтів (A)
+# КРОК 1: Формування таблиці вимірів (Dim_Clients)
 # ==========================================
-# Читаємо конкретно перший лист, щоб не чіпати твій Validation_Report
-df_a = pd.read_excel(zkp_file, sheet_name=0) 
 
-df_a.rename(columns={'CONTRAGENTID': 'IDENTIFYCODE'}, inplace=True)
-# Так само жорстко стандартизуємо ID
-df_a['IDENTIFYCODE'] = df_a['IDENTIFYCODE'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-
-# Очищуємо доходи
-income_cols = [col for col in df_a.columns if col.startswith('INCOME_')]
-for col in income_cols:
-    # Прибираємо дефіси і конвертуємо в числа
-    df_a[col] = pd.to_numeric(df_a[col].astype(str).str.replace('-', ''), errors='coerce').fillna(0)
-
-
-# ==========================================
-# 3. СТВОРЕННЯ ТАБЛИЦІ ВИМІРУ (Dim_Clients)
-# ==========================================
-df_clients = pd.merge(
-    df_p, 
-    df_a[['IDENTIFYCODE', 'pilot_month']].drop_duplicates(), 
+# Робимо Left Join: до всіх потенційних клієнтів підтягуємо дані про їхнє залучення
+df_dim_clients = pd.merge(
+    df_potential, 
+    df_engaged[['IDENTIFYCODE', 'CONTRAGENTID', 'REGISTERDATE']], 
     on='IDENTIFYCODE', 
-    how='outer'
+    how='left'
 )
 
-df_clients['Source_Bank'] = df_clients['Source_Bank'].fillna('Unknown_Source')
-df_clients['Is_Acquired'] = df_clients['pilot_month'].notna().astype(int)
-df_clients['Status'] = np.where(df_clients['Is_Acquired'] == 1, 'Acquired', 'Potential Only')
+# Витягуємо статичну метрику карток з таблиці доходів
+df_cards = df_income[['CONTRAGENTID', 'ZKP_NB_CARDS_2026_02']].copy()
+df_cards.rename(columns={'ZKP_NB_CARDS_2026_02': 'Cards_Count'}, inplace=True)
 
+# Підтягуємо кількість карток до клієнтів
+df_dim_clients = pd.merge(df_dim_clients, df_cards, on='CONTRAGENTID', how='left')
+
+# Формуємо статус (1 - Залучений, 0 - Тільки потенційний)
+df_dim_clients['Is_Engaged'] = df_dim_clients['CONTRAGENTID'].notna().astype(int)
+df_dim_clients['Status'] = np.where(df_dim_clients['Is_Engaged'] == 1, 'Engaged', 'Potential')
 
 # ==========================================
-# 4. СТВОРЕННЯ ТАБЛИЦІ ФАКТІВ (Fact_Income)
+# КРОК 2: Формування таблиці фактів (Fact_Income)
 # ==========================================
-df_facts = pd.melt(
-    df_a,
-    id_vars=['IDENTIFYCODE'],
-    value_vars=income_cols,
-    var_name='Income_Month_Raw',
+
+# Визначаємо стовпці з датами (всі, окрім ID та карток)
+date_cols = [col for col in df_income.columns if col not in ['CONTRAGENTID', 'ZKP_NB_CARDS_2026_02']]
+
+# Трансформація матриці у векторний формат (Unpivot)
+df_fact_income = pd.melt(
+    df_income,
+    id_vars=['CONTRAGENTID'],
+    value_vars=date_cols,
+    var_name='Income_Date',
     value_name='Income_Value'
 )
 
-# Залишаємо лише факти прибутку
-df_facts = df_facts[df_facts['Income_Value'] > 0].copy()
+# Очищуємо порожні значення (NaN), щоб не завантажувати пусті рядки в пам'ять
+df_fact_income = df_fact_income.dropna(subset=['Income_Value'])
+df_fact_income = df_fact_income[df_fact_income['Income_Value'] > 0]
 
-# Створюємо чіткі точкові дати замість інтервалів (як ти просив раніше)
-df_facts['Date'] = df_facts['Income_Month_Raw'].str.replace('INCOME_', '') + '_01'
-df_facts['Date'] = pd.to_datetime(df_facts['Date'], format='%Y_%m_%d').dt.date
-
-df_facts = df_facts[['IDENTIFYCODE', 'Date', 'Income_Value']]
-
+# Приводимо дати до формату datetime
+df_fact_income['Income_Date'] = pd.to_datetime(df_fact_income['Income_Date']).dt.date
 
 # ==========================================
-# 5. ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТІВ
+# ЗБЕРЕЖЕННЯ
 # ==========================================
-df_clients.to_csv('Dim_Clients.csv', index=False)
-df_facts.to_csv('Fact_Income.csv', index=False)
+output_dir = r"C:\Projects\Alina Kinash\data_for_dashboard"
+df_dim_clients.to_csv(f"{output_dir}\PBI_Dim_Clients.csv", index=False)
+df_fact_income.to_csv(f"{output_dir}\PBI_Fact_Income.csv", index=False)
 
-print(f"Успішно! Згенеровано таблиці:")
-print(f"Dim_Clients.csv: {len(df_clients)} унікальних клієнтів")
-print(f"Fact_Income.csv: {len(df_facts)} записів про дохід")
+print("Дані для Power BI успішно підготовлені.")
