@@ -1,25 +1,22 @@
-# ==========================================
-# КРОК 2: Формування таблиці фактів (Fact_Income)
-# ==========================================
+import pandas as pd
 
-# СТРОГИЙ ФІЛЬТР: Беремо тільки ті стовпці, назва яких починається з '202' (наприклад, '2025-06-30')
-date_cols = [col for col in df_income.columns if str(col).startswith('202')]
+def normalize_phone(phone):
+    if pd.isna(phone):
+        return None
+    
+    phone = str(phone)
+    
+    # пропускаємо замасковані
+    if "x" in phone.lower():
+        return None
+    
+    # залишаємо тільки цифри
+    digits = ''.join(filter(str.isdigit, phone))
+    
+    # має бути 10 цифр (0660120498)
+    if len(digits) == 10 and digits.startswith("0"):
+        digits = "38" + digits
+    
+    return digits
 
-# Трансформація матриці у векторний формат (Unpivot)
-df_fact_income = pd.melt(
-    df_income,
-    id_vars=['CONTRAGENTID'],
-    value_vars=date_cols,
-    var_name='Income_Date',
-    value_name='Income_Value'
-)
-
-# Жорстка типізація: перетворюємо значення на числа. Якщо попадеться текст - він стане NaN
-df_fact_income['Income_Value'] = pd.to_numeric(df_fact_income['Income_Value'], errors='coerce')
-
-# Відкидаємо порожні (NaN) та нульові значення
-df_fact_income = df_fact_income.dropna(subset=['Income_Value'])
-df_fact_income = df_fact_income[df_fact_income['Income_Value'] > 0]
-
-# Приводимо дати до правильного формату
-df_fact_income['Income_Date'] = pd.to_datetime(df_fact_income['Income_Date']).dt.date
+autoria["MOBILEPHONE"] = autoria["Номер телефону"].apply(normalize_phone)
