@@ -1,22 +1,37 @@
-# 1. Формуємо Dim_Clients (беремо REGISTERDATE)
-df_dim_clients = pd.merge(
-    df_potential,
-    df_engaged[['IDENTIFYCODE', 'CONTRAGENTID', 'REGISTERDATE']], 
-    on='IDENTIFYCODE',
-    how='left'
-)
+import pandas as pd
+import re
+import ast
 
-# Перейменовуємо REGISTERDATE на pilot_month
-df_dim_clients.rename(columns={'REGISTERDATE': 'pilot_month'}, inplace=True)
+def extract_phone(val):
 
-# 2. Витягуємо ТІЛЬКИ картки з таблиці доходів (без pilot_month, бо він вже є)
-df_static_info = df_income[['CONTRAGENTID', 'ZKP_NB_CARDS_2026_02']].copy()
-df_static_info.rename(columns={'ZKP_NB_CARDS_2026_02': 'Cards_Count'}, inplace=True)
-df_static_info = df_static_info.drop_duplicates(subset=['CONTRAGENTID'])
+    if val == 0 or pd.isna(val):
+        return None
 
-# 3. Підтягуємо картки
-df_dim_clients = pd.merge(df_dim_clients, df_static_info, on='CONTRAGENTID', how='left')
+    try:
+        # перетворюємо рядок у dict
+        if isinstance(val, str) and val.startswith("{"):
+            val = ast.literal_eval(val)
 
-# 4. Проставляємо статуси
-df_dim_clients['Is_Engaged'] = df_dim_clients['CONTRAGENTID'].notna().astype(int)
-df_dim_clients['Status'] = np.where(df_dim_clients['Is_Engaged'] == 1, 'Engaged', 'Potential')
+        phone = val.get("phone")
+
+        if phone is None:
+            return None
+
+        # пропускаємо masked
+        if "x" in phone.lower():
+            return None
+
+        # залишаємо тільки цифри
+        digits = re.sub(r"\D", "", phone)
+
+        if len(digits) == 10 and digits.startswith("0"):
+            digits = "38" + digits
+
+        return digits
+
+    except:
+        return None
+
+
+autoria["MOBILEPHONE"] = autoria["userPhoneData"].apply(extract_phone)
+autoria = autoria.dropna(subset=["MOBILEPHONE"])
