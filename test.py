@@ -1,37 +1,51 @@
 import pandas as pd
-import re
-import ast
+import os
 
-def extract_phone(val):
+# мапа місяців
+month_map = {
+    1: "Січень",
+    2: "Лютий",
+    3: "Березень",
+    4: "Квітень",
+    5: "Травень",
+    6: "Червень",
+    7: "Липень",
+    8: "Серпень",
+    9: "Вересень",
+    10: "Жовтень",
+    11: "Листопад",
+    12: "Грудень"
+}
 
-    if val == 0 or pd.isna(val):
-        return None
+# гарантуємо datetime
+df["call_date"] = pd.to_datetime(df["call_date"])
 
-    try:
-        # перетворюємо рядок у dict
-        if isinstance(val, str) and val.startswith("{"):
-            val = ast.literal_eval(val)
+# створюємо назву місяця
+df["year_month"] = df["call_date"].apply(
+    lambda x: f"{month_map[x.month]}_{x.year}"
+)
 
-        phone = val.get("phone")
+sum_rows = 0
 
-        if phone is None:
-            return None
+for ym, g in df.groupby("year_month"):
 
-        # пропускаємо masked
-        if "x" in phone.lower():
-            return None
+    filename = f"NPS_{ym}.parquet"
 
-        # залишаємо тільки цифри
-        digits = re.sub(r"\D", "", phone)
+    g.to_parquet(
+        os.path.join(FILEPATH, filename),
+        index=False
+    )
 
-        if len(digits) == 10 and digits.startswith("0"):
-            digits = "38" + digits
+    sum_rows += len(g)
 
-        return digits
+    print(f"Saved {filename}. Rows = {len(g)}")
 
-    except:
-        return None
+total = len(df)
+parsed = df["year_month"].notna().sum()
+missing = df["year_month"].isna().sum()
 
-
-autoria["MOBILEPHONE"] = autoria["userPhoneData"].apply(extract_phone)
-autoria = autoria.dropna(subset=["MOBILEPHONE"])
+print("Total rows:", total)
+print("Parsed rows:", parsed)
+print("Missing rows:", missing)
+print("Parsed %:", parsed / total)
+print("Total saved:", sum_rows)
