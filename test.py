@@ -1,7 +1,10 @@
 import pandas as pd
 import os
+from pathlib import Path
 
-# мапа місяців
+INPUT_PATH = r"C:\Projects\(DS-514) NPS Preprocessing\NPS_RAW"
+OUTPUT_PATH = r"C:\Projects\(DS-514) NPS Preprocessing\PARQUET"
+
 month_map = {
     1: "Січень",
     2: "Лютий",
@@ -17,35 +20,30 @@ month_map = {
     12: "Грудень"
 }
 
-# гарантуємо datetime
-df["call_date"] = pd.to_datetime(df["call_date"])
+files = Path(INPUT_PATH).glob("*.xlsx")
 
-# створюємо назву місяця
-df["year_month"] = df["call_date"].apply(
-    lambda x: f"{month_map[x.month]}_{x.year}"
-)
+for file in files:
 
-sum_rows = 0
+    print(f"Processing {file.name}")
 
-for ym, g in df.groupby("year_month"):
+    df = pd.read_excel(file, dtype={"CNUM": "str"})
 
-    filename = f"NPS_{ym}.parquet"
+    df["call_date"] = pd.to_datetime(df["call_date"])
 
-    g.to_parquet(
-        os.path.join(FILEPATH, filename),
-        index=False
+    df["year_month"] = (
+        df["call_date"]
+        .dt.month.map(month_map)
+        + "_"
+        + df["call_date"].dt.year.astype(str)
     )
 
-    sum_rows += len(g)
+    for ym, g in df.groupby("year_month"):
 
-    print(f"Saved {filename}. Rows = {len(g)}")
+        filename = f"NPS_{ym}.parquet"
 
-total = len(df)
-parsed = df["year_month"].notna().sum()
-missing = df["year_month"].isna().sum()
+        g.to_parquet(
+            os.path.join(OUTPUT_PATH, filename),
+            index=False
+        )
 
-print("Total rows:", total)
-print("Parsed rows:", parsed)
-print("Missing rows:", missing)
-print("Parsed %:", parsed / total)
-print("Total saved:", sum_rows)
+        print(f"Saved {filename} | rows={len(g)}")
