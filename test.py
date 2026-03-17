@@ -1,49 +1,37 @@
+import numpy as np
 import pandas as pd
-import os
-from pathlib import Path
+import lightgbm as lgb
+from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import train_test_split
 
-INPUT_PATH = r"C:\Projects\(DS-514) NPS Preprocessing\NPS_RAW"
-OUTPUT_PATH = r"C:\Projects\(DS-514) NPS Preprocessing\PARQUET"
+cat_cols = [c for c in X_train.columns if X_train[c].dtype.name in ("object", "category")]
+for c in cat_cols:
+    X_train[c] = X_train[c].astype("category")
+    X_val[c] = X_val[c].astype("category")
 
-month_map = {
-    1: "Січень",
-    2: "Лютий",
-    3: "Березень",
-    4: "Квітень",
-    5: "Травень",
-    6: "Червень",
-    7: "Липень",
-    8: "Серпень",
-    9: "Вересень",
-    10: "Жовтень",
-    11: "Листопад",
-    12: "Грудень"
-}
+reg_model = lgb.LGBMRegressor(
+    objective='regression_l1',  # Саме L1 мінімізує MAE
+    metric='mae',
+    n_estimators=2000,
+    learning_rate=0.05,
+    num_leaves=31,
+    random_state=42,
+    n_jobs=-1
+)
 
-files = Path(INPUT_PATH).glob("*.xlsx")
+reg_model.fit(
+    X_train, y_train,
+    eval_set=[(X_val, y_val)],
+    callbacks=[lgb.early_stopping(stopping_rounds=100)]
+)
 
-for file in files:
+y_pred_log = reg_model.predict(X_val)
 
-    print(f"Processing {file.name}")
+mae_log = mean_absolute_error(y_val, y_pred_log)
+print(f"MAE on Log scale: {mae_log:.4f}")
 
-    df = pd.read_excel(file, dtype={"CNUM": "str"})
+y_val_real = np.expm1(y_val)
+y_pred_real = np.expm1(y_pred_log)
 
-    df["call_date"] = pd.to_datetime(df["call_date"])
-
-    df["year_month"] = (
-        df["call_date"]
-        .dt.month.map(month_map)
-        + "_"
-        + df["call_date"].dt.year.astype(str)
-    )
-
-    for ym, g in df.groupby("year_month"):
-
-        filename = f"NPS_{ym}.parquet"
-
-        g.to_parquet(
-            os.path.join(OUTPUT_PATH, filename),
-            index=False
-        )
-
-        print(f"Saved {filename} | rows={len(g)}")
+final_mae = mean_absolute_error(y_val_real, y_pred_real)
+print(f"Final MAE (Original Scale): {final_mae:.2f}")
