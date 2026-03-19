@@ -1,49 +1,67 @@
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-from sklearn.metrics import mean_absolute_error, median_absolute_error
+from sklearn.metrics import mean_absolute_error, roc_auc_score, mean_absolute_percentage_error
 
-# 1. Повертаємо цільову змінну в оригінальний масштаб ДЛЯ ТРЕНУВАННЯ
-# (Оскільки y_train_log у тебе вже був прологарифмований раніше)
-y_train_orig = np.expm1(y_train_log)
-y_val_orig = np.expm1(y_val_log)
+print("\n--- Inference and Evaluation ---")
 
-print("--- Training Single Model with Huber Loss ---")
-reg_huber = lgb.LGBMRegressor(
-    objective="huber",
-    alpha=1.5, # Поріг переходу від MSE до MAE. Чим менше, тим стійкіша до викидів.
-    n_estimators=3000,
-    learning_rate=0.015, # Робимо крок меншим для стабільності на оригінальному масштабі
-    num_leaves=31,       # Можна дати трохи більше свободи, бо це єдина модель
-    min_child_samples=20,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
+# 1. Отримуємо прогнози від усіх трьох моделей у логарифмічному просторі
+p_vip_val = clf_router.predict_proba(X_val_final)[:, 1]
+pred_mass_log = reg_mass.predict(X_val_final)
+pred_vip_log = reg_vip.predict(X_val_final)
 
-# Навчаємо модель безпосередньо на оригінальних грошах
-reg_huber.fit(
-    X_train_final, y_train_orig,
-    eval_set=[(X_val_final, y_val_orig)],
-    eval_metric="mae", # Валідуємося все одно по MAE
-    callbacks=[lgb.early_stopping(stopping_rounds=150, verbose=True)]
-)
+# 2. Hard Routing (Жорсткий вибір)
+# Якщо Роутер впевнений, що це VIP (>0.5), беремо прогноз VIP-моделі, інакше - Mass
+ROUTER_THRESHOLD = 0.5
+pred_final_log_hard = np.where(p_vip_val > ROUTER_THRESHOLD, pred_vip_log, pred_mass_log)
 
-# 2. Оцінка
-pred_huber = reg_huber.predict(X_val_final)
+# 3. Переводимо прогнози та справжні значення в оригінальний простір (гроші)
+pred_final_original = np.expm1(pred_final_log_hard)
+y_val_original = np.expm1(y_val_log)
 
-# Захист від від'ємних прогнозів (регресія може видати невеликий мінус)
-pred_huber = np.maximum(pred_huber, 0)
-
-final_mae = mean_absolute_error(y_val_orig, pred_huber)
-final_medae = median_absolute_error(y_val_orig, pred_huber)
-
-print("-" * 40)
-print(f"FINAL ORIGINAL MAE (Huber)  : {final_mae:,.2f}")
-print(f"FINAL ORIGINAL MedAE (Huber): {final_medae:,.2f}")
-
-# Дивимося на результати в DataFrame
-validation_results_huber = pd.DataFrame({
-    'IDENTIFYCODE': X_val.index,
-    'True_Value': y_val_orig,
-    'Predicted': pred_huber
+# Збираємо результати в DataFrame для зручного дебагу
+validation_results = pd.DataFrame({
+    'IDENTIFYCODE': X_val_final.index,
+    'True_Value': y_val_original,
+    'Predicted': pred_final_original,
+    'Router_Prob_VIP': p_vip_val
 })
+
+# ==========================================
+# ОЦІНКА РЕЗУЛЬТАТІВ
+# ==========================================
+
+# 4. Загальні метрики всього пайплайну
+final_mae = mean_absolute_error(y_val_original, pred_final_original)
+router_auc = roc_auc_score(y_val_class, p_vip_val)
+
+print(f"--- Загальні метрики пайплайну ---")
+print(f"Router ROC-AUC: {router_auc:.4f}")
+print(f"FINAL ORIGINAL MAE (Two-Stage Pipeline): {final_mae:,.2f}")
+
+# 5. Детальний аналіз: як працює пайплайн на різних типах клієнтів
+mask_real_mass = y_val_original <= np.expm1(THRESHOLD_LOG)
+mask_real_vip = y_val_original > np.expm1(THRESHOLD_LOG)
+
+mae_pipeline_mass = mean_absolute_error(y_val_original[mask_real_mass], pred_final_original[mask_real_mass])
+mae_pipeline_vip = mean_absolute_error(y_val_original[mask_real_vip], pred_final_original[mask_real_vip])
+
+print(f"\n--- Метрики пайплайну по фактичних сегментах ---")
+print(f"MAE пайплайну на REAL MASS: {mae_pipeline_mass:,.2f}")
+print(f"MAE пайплайну на REAL VIP : {mae_pipeline_vip:,.2f}")
+
+# 6. ІЗОЛЬОВАНА ПЕРЕВІРКА (Ідеальний Роутер)
+# Оцінюємо регресори так, ніби Роутер ніколи не помиляється.
+# Це покаже "стелю" якості твоїх регресійних моделей.
+pred_ideal_mass_orig = np.expm1(reg_mass.predict(X_val_mass))
+pred_ideal_vip_orig = np.expm1(reg_vip.predict(X_val_vip))
+
+mae_ideal_mass = mean_absolute_error(np.expm1(y_val_mass_log), pred_ideal_mass_orig)
+mae_ideal_vip = mean_absolute_error(np.expm1(y_val_vip_log), pred_ideal_vip_orig)
+
+print(f"\n--- Ізольовані метрики регресорів (за умови ідеального роутера) ---")
+print(f"Ізольований MAE чистої MASS моделі: {mae_ideal_mass:,.2f}")
+print(f"Ізольований MAE чистої VIP моделі : {mae_ideal_vip:,.2f}")
+
+# Додаємо MAPE для VIP сегменту, щоб інтуїтивно розуміти помилку у відсотках
+mape_ideal_vip = mean_absolute_percentage_error(np.expm1(y_val_vip_log), pred_ideal_vip_orig)
+print(f"Ізольований MAPE чистої VIP моделі: {mape_ideal_vip:.2%}")
