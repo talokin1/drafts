@@ -1,44 +1,49 @@
-# --- Inference and Evaluation ---
-p_vip_val = clf_router.predict_proba(X_val_final)[:, 1]
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+from sklearn.metrics import mean_absolute_error, median_absolute_error
 
-# Отримуємо прогнози регресорів у ЛОГ-просторі
-pred_mass_log = reg_mass.predict(X_val_final)
-pred_vip_log = reg_vip.predict(X_val_final)
+# 1. Повертаємо цільову змінну в оригінальний масштаб ДЛЯ ТРЕНУВАННЯ
+# (Оскільки y_train_log у тебе вже був прологарифмований раніше)
+y_train_orig = np.expm1(y_train_log)
+y_val_orig = np.expm1(y_val_log)
 
-# ВАЖЛИВО: Одразу переводимо ВСЕ в оригінальні гроші
-pred_mass_original = np.expm1(pred_mass_log)
-pred_vip_original = np.expm1(pred_vip_log)
-y_val_original = np.expm1(y_val_log) # Повертаємо expm1 сюди!
+print("--- Training Single Model with Huber Loss ---")
+reg_huber = lgb.LGBMRegressor(
+    objective="huber",
+    alpha=1.5, # Поріг переходу від MSE до MAE. Чим менше, тим стійкіша до викидів.
+    n_estimators=3000,
+    learning_rate=0.015, # Робимо крок меншим для стабільності на оригінальному масштабі
+    num_leaves=31,       # Можна дати трохи більше свободи, бо це єдина модель
+    min_child_samples=20,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
 
-# Зважуємо прогнози ВЖЕ В ОРИГІНАЛЬНИХ ГРОШАХ (Soft Blending)
-pred_final_original = (p_vip_val * pred_vip_original) + ((1 - p_vip_val) * pred_mass_original)
+# Навчаємо модель безпосередньо на оригінальних грошах
+reg_huber.fit(
+    X_train_final, y_train_orig,
+    eval_set=[(X_val_final, y_val_orig)],
+    eval_metric="mae", # Валідуємося все одно по MAE
+    callbacks=[lgb.early_stopping(stopping_rounds=150, verbose=True)]
+)
 
-# --- DataFrame ---
-validation_results = pd.DataFrame({
+# 2. Оцінка
+pred_huber = reg_huber.predict(X_val_final)
+
+# Захист від від'ємних прогнозів (регресія може видати невеликий мінус)
+pred_huber = np.maximum(pred_huber, 0)
+
+final_mae = mean_absolute_error(y_val_orig, pred_huber)
+final_medae = median_absolute_error(y_val_orig, pred_huber)
+
+print("-" * 40)
+print(f"FINAL ORIGINAL MAE (Huber)  : {final_mae:,.2f}")
+print(f"FINAL ORIGINAL MedAE (Huber): {final_medae:,.2f}")
+
+# Дивимося на результати в DataFrame
+validation_results_huber = pd.DataFrame({
     'IDENTIFYCODE': X_val.index,
-    'True_Value': y_val_original,
-    'Predicted': pred_final_original
+    'True_Value': y_val_orig,
+    'Predicted': pred_huber
 })
-
-# --- Метрики ---
-final_mae = mean_absolute_error(y_val_original, pred_final_original)
-print(f"FINAL ORIGINAL MAE (Two-Stage Model): {final_mae:,.2f}")
-
-from sklearn.metrics import roc_auc_score
-print(f"Router ROC-AUC: {roc_auc_score(y_val_class, p_vip_val):.4f}")
-
-# MAE тільки для Mass сегмента
-mask_real_mass = y_val_original <= np.expm1(THRESHOLD_LOG)
-mae_mass = mean_absolute_error(
-    y_val_original[mask_real_mass], 
-    pred_final_original[mask_real_mass]
-)
-print(f"MAE on REAL MASS clients : {mae_mass:,.2f}")
-
-# MAE тільки для VIP сегмента
-mask_real_vip = y_val_original > np.expm1(THRESHOLD_LOG)
-mae_vip = mean_absolute_error(
-    y_val_original[mask_real_vip], 
-    pred_final_original[mask_real_vip]
-)
-print(f"MAE on REAL VIP clients  : {mae_vip:,.2f}")
