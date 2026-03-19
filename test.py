@@ -1,64 +1,117 @@
+import numpy as np
 import pandas as pd
-import glob
-import os
+import lightgbm as lgb
+from sklearn.metrics import mean_absolute_error, log_loss
 
-# Вкажи шлях до папки, куди ти щойно зберіг усі Excel-файли
-input_folder = r"C:\Projects\Alina Kinash\data_for_dashboard\raw_potential_clients"
-# Шлях, куди ми збережемо фінальний чистий файл (який потім піде в основний скрипт)
-output_file = r"C:\Projects\Alina Kinash\data_for_dashboard\potential_clients.csv"
+# ==========================================
+# 1. Визначаємо межу (Threshold)
+# ==========================================
+# Дивлячись на твою гістограму (image_f0d2e4.png), "провал" між двома горбами 
+# знаходиться приблизно на рівні логарифма 6.0 - 6.5. 
+# Давай візьмемо 6.2 як точку розрізу (можеш підібрати оптимальну потім).
+THRESHOLD_LOG = 6.2 
 
-print("Починаю збір даних з Excel-файлів...")
+# Створюємо бінарні таргети для Роутера
+y_train_class = (y_train_log > THRESHOLD_LOG).astype(int)
+y_val_class = (y_val_log > THRESHOLD_LOG).astype(int)
 
-# Шукаємо всі файли з розширенням .xlsx
-all_files = glob.glob(os.path.join(input_folder, "*.xlsx"))
-df_list = []
+# ==========================================
+# 2. Навчаємо Router (Класифікатор)
+# ==========================================
+print("--- Training Router Classifier ---")
+clf_router = lgb.LGBMClassifier(
+    objective="binary",
+    n_estimators=1000,
+    learning_rate=0.03,
+    num_leaves=15,
+    min_child_samples=30,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
 
-print(f"Знайдено файлів: {len(all_files)}")
+clf_router.fit(
+    X_train_final, 
+    y_train_class,
+    eval_set=[(X_val_final, y_val_class)],
+    eval_metric="binary_logloss",
+    callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)]
+)
 
-for file in all_files:
-    # Читаємо файл
-    df_temp = pd.read_excel(file)
-    
-    # Витягуємо назву файлу, щоб знати, звідки клієнт
-    file_name = os.path.basename(file).replace('.xlsx', '')
-    
-    # Динамічно шукаємо колонку з ID (ігноруємо регістр)
-    id_col = None
-    for col in df_temp.columns:
-        if str(col).strip().upper() in ['IDENTIFYCODE', 'CONTRAGENTID', 'ID', 'ЄДРПОУ', 'ІПН', 'IDENTIFY_CODE']:
-            id_col = col
-            break
-            
-    # Якщо специфічної назви немає, беремо першу колонку як ключ
-    if id_col is None:
-        id_col = df_temp.columns[0]
-        
-    # Створюємо підмножину: тільки ID та джерело
-    temp_subset = df_temp[[id_col]].copy()
-    temp_subset.rename(columns={id_col: 'IDENTIFYCODE'}, inplace=True)
-    
-    # Жорстка типізація: перетворюємо ID на текст, видаляємо пробіли та ".0"
-    temp_subset['IDENTIFYCODE'] = temp_subset['IDENTIFYCODE'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-    
-    # Додаємо колонку з назвою банку (на основі назви файлу)
-    # Відрізаємо зайве, наприклад "UkRExim_clients Дніпро" -> "UkRExim"
-    bank_name = file_name.split('_')[0].capitalize() 
-    if "MOTOR" in file_name.upper(): bank_name = "Motor Bank"
-    elif "EXIM" in file_name.upper() or "ЕКСІМ" in file_name.upper(): bank_name = "Ukreximbank"
-    
-    temp_subset['BANK'] = bank_name
-    
-    df_list.append(temp_subset)
+# ==========================================
+# 3. Розбиваємо дані для Регресорів
+# ==========================================
+# Тренувальна вибірка
+mask_train_mass = y_train_log <= THRESHOLD_LOG
+mask_train_vip = y_train_log > THRESHOLD_LOG
 
-# 1. Об'єднуємо всі файли в одну велику матрицю (Union)
-df_all = pd.concat(df_list, ignore_index=True)
-print(f"Загальна кількість рядків до очистки: {len(df_all)}")
+X_train_mass, y_train_mass = X_train_final[mask_train_mass], y_train_log[mask_train_mass]
+X_train_vip, y_train_vip = X_train_final[mask_train_vip], y_train_log[mask_train_vip]
 
-# 2. Видаляємо дублікати (якщо один клієнт є в кількох файлах/регіонах)
-# keep='first' означає, що ми залишимо першу згадку про клієнта
-df_unique = df_all.drop_duplicates(subset=['IDENTIFYCODE'], keep='first')
+# Валідаційна вибірка (справжня, для early stopping регресорів)
+mask_val_mass = y_val_log <= THRESHOLD_LOG
+mask_val_vip = y_val_log > THRESHOLD_LOG
 
-# 3. Зберігаємо результат
-df_unique.to_csv(output_file, index=False)
+X_val_mass, y_val_mass_log = X_val_final[mask_val_mass], y_val_log[mask_val_mass]
+X_val_vip, y_val_vip_log = X_val_final[mask_val_vip], y_val_log[mask_val_vip]
 
-print(f"ГОТОВО! Потужність унікальної множини |P| (Потенційні клієнти): {len(df_unique)}")
+# ==========================================
+# 4. Навчаємо Регресор 1 (Mass сегмент)
+# ==========================================
+print("\n--- Training Mass Regressor (y <= threshold) ---")
+reg_mass = lgb.LGBMRegressor(
+    objective="regression_l1", 
+    n_estimators=2000,
+    learning_rate=0.02,
+    num_leaves=15,
+    min_child_samples=20, # Може бути менше, бо тут багато даних
+    random_state=RANDOM_STATE
+)
+reg_mass.fit(
+    X_train_mass, y_train_mass,
+    eval_set=[(X_val_mass, y_val_mass_log)],
+    eval_metric="l1",
+    callbacks=[lgb.early_stopping(stopping_rounds=150, verbose=False)]
+)
+
+# ==========================================
+# 5. Навчаємо Регресор 2 (VIP сегмент)
+# ==========================================
+print("\n--- Training VIP Regressor (y > threshold) ---")
+reg_vip = lgb.LGBMRegressor(
+    objective="regression_l1", 
+    n_estimators=2000,
+    learning_rate=0.01, # Ще менший крок, бо вибірка менша і шумніша
+    num_leaves=10,      # Менше листя, щоб не перенавчитись на малому горбі
+    min_child_samples=10, 
+    random_state=RANDOM_STATE
+)
+reg_vip.fit(
+    X_train_vip, y_train_vip,
+    eval_set=[(X_val_vip, y_val_vip_log)],
+    eval_metric="l1",
+    callbacks=[lgb.early_stopping(stopping_rounds=150, verbose=False)]
+)
+
+# ==========================================
+# 6. INFERENCE (Прогноз на валідації)
+# ==========================================
+print("\n--- Inference and Evaluation ---")
+# 6.1. Роутер передбачає ймовірність, що клієнт VIP
+p_vip_val = clf_router.predict_proba(X_val_final)[:, 1]
+
+# 6.2. Обидва регресори роблять прогноз для ВСІХ клієнтів у валідації
+pred_mass_log = reg_mass.predict(X_val_final)
+pred_vip_log = reg_vip.predict(X_val_final)
+
+# 6.3. Вибір стратегії об'єднання
+# СТРАТЕГІЯ "HARD ROUTING": Якщо ймовірність > 0.5, беремо прогноз VIP, інакше Mass
+# (Зазвичай краще працює для оптимізації MAE / медіани)
+pred_final_log_hard = np.where(p_vip_val > 0.5, pred_vip_log, pred_mass_log)
+
+# Переводимо в оригінальні гроші
+pred_final_original = np.expm1(pred_final_log_hard)
+y_val_original = np.expm1(y_val_log)
+
+# Оцінка
+final_mae = mean_absolute_error(y_val_original, pred_final_original)
+print(f"FINAL ORIGINAL MAE (Two-Stage Model): {final_mae:,.2f}")
