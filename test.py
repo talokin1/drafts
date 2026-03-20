@@ -16,68 +16,49 @@ from sklearn.metrics import (
 # 0. CONFIG
 # =========================================================
 RANDOM_STATE = 42
-TARGET_NAME = "TRXS_INCOME"   # <-- заміни на свою назву таргету
-ID_COL = "IDENTIFYCODE"       # <-- якщо ID у тебе в індексі, це теж ок
 
 # =========================================================
-# 1. COPY DATA
+# 1. COPY X / y
 # =========================================================
-df_model = df.copy()
-
-# Якщо ID лежить в індексі, можна цей блок не чіпати.
-# Якщо ID окремою колонкою, лишаємо його для validation_results,
-# але не подаємо в модель.
-if ID_COL in df_model.columns:
-    ids_all = df_model[ID_COL].copy()
-else:
-    ids_all = df_model.index.copy()
+X_model = X.copy()
+y_model = y.copy()
 
 # =========================================================
-# 2. FILTER TARGET > 0
-#    (бо ти сказав, що нулі для бізнесу неважливі)
+# 2. FILTER ONLY POSITIVE TARGET
+#    бо нулі ти вже вирішив не враховувати
 # =========================================================
-df_model = df_model[df_model[TARGET_NAME] > 0].copy()
+mask = y_model > 0
 
-# Перевірка
-print(f"Rows after target > 0 filter: {len(df_model):,}")
+X_model = X_model.loc[mask].copy()
+y_model = y_model.loc[mask].copy()
+
+print(f"Rows after target > 0 filter: {len(X_model):,}")
 
 # =========================================================
-# 3. DEFINE X / y
+# 3. LOG TARGET
 # =========================================================
-drop_cols = [TARGET_NAME]
-
-# Якщо ID окремою колонкою і не треба в модель
-if ID_COL in df_model.columns:
-    drop_cols.append(ID_COL)
-
-X = df_model.drop(columns=drop_cols).copy()
-y = df_model[TARGET_NAME].copy()
-
-# Лог-таргет
-y_log = np.log1p(y)
+y_log = np.log1p(y_model)
 
 # Для stratify по безперервному таргету
-# Якщо qcut дає мало унікальних бакетів, можна зменшити q
-y_bins = pd.qcut(y, q=10, labels=False, duplicates="drop")
+y_bins = pd.qcut(y_model, q=10, labels=False, duplicates="drop")
 
 # =========================================================
 # 4. TRAIN / VALID SPLIT
 # =========================================================
 X_train, X_val, y_train_log, y_val_log = train_test_split(
-    X,
+    X_model,
     y_log,
     test_size=0.2,
     random_state=RANDOM_STATE,
     stratify=y_bins
 )
 
-# Окремо тримаємо original-scale target для зручності
+# original-scale target
 y_train = np.expm1(y_train_log)
 y_val = np.expm1(y_val_log)
 
 # ID для validation_results
-ids_train = X_train.index
-ids_val = X_val.index
+ids_val = X_val.index.copy()
 
 # =========================================================
 # 5. CATEGORICAL FEATURES
@@ -87,8 +68,6 @@ cat_cols = [c for c in X_train.columns if X_train[c].dtype.name in ("object", "c
 for c in cat_cols:
     X_train[c] = X_train[c].astype("category")
     X_val[c] = X_val[c].astype("category")
-
-    # Вирівнюємо категорії validation до train
     X_val[c] = X_val[c].cat.set_categories(X_train[c].cat.categories)
 
 X_train_final = X_train.copy()
@@ -102,7 +81,7 @@ print(f"Categorical cols: {len(cat_cols)}")
 # 6. MODEL
 # =========================================================
 reg = lgb.LGBMRegressor(
-    objective="huber",         # можна ще спробувати 'regression', 'mae', 'tweedie'
+    objective="huber",
     n_estimators=5000,
     learning_rate=0.03,
     num_leaves=180,
@@ -126,20 +105,14 @@ reg.fit(
 )
 
 # =========================================================
-# 7. PREDICTIONS
+# 7. PREDICT
 # =========================================================
-# Прогноз у log-space
 y_pred_log = reg.predict(X_val_final)
-
-# Прогноз в original space
 y_pred = np.expm1(y_pred_log)
-
-# Захист від негативних значень після зворотного перетворення
 y_pred = np.clip(y_pred, a_min=0, a_max=None)
 
 # =========================================================
 # 8. OPTIONAL CALIBRATION
-#    Калібрування прогнозу в log-space
 # =========================================================
 poly_model = make_pipeline(
     PolynomialFeatures(degree=2, include_bias=False),
@@ -155,12 +128,10 @@ y_pred_cal = np.clip(y_pred_cal, a_min=0, a_max=None)
 # =========================================================
 # 9. METRICS
 # =========================================================
-# --- LOG SPACE ---
 mae_log = mean_absolute_error(y_val_log, y_pred_log)
 medae_log = median_absolute_error(y_val_log, y_pred_log)
 r2_log = r2_score(y_val_log, y_pred_log)
 
-# --- ORIGINAL SPACE ---
 mae = mean_absolute_error(y_val, y_pred)
 mae_cal = mean_absolute_error(y_val, y_pred_cal)
 medae = median_absolute_error(y_val, y_pred)
@@ -187,7 +158,7 @@ print(f"sMAPE      : {smape:.4f}")
 print("=" * 70)
 
 # =========================================================
-# 10. VALIDATION RESULTS TABLE
+# 10. VALIDATION RESULTS
 # =========================================================
 validation_results = pd.DataFrame({
     "IDENTIFYCODE": ids_val,
