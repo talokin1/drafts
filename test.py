@@ -1,121 +1,49 @@
-import numpy as np
 import pandas as pd
+import xlwings as xw
 
-from lightgbm import LGBMRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+file_path = r"C:\Projects\(DS-644) Acquiring OTPay\Копія OTPay_Acquiring (002).xlsx"
+sheet_name = "data"
 
-# =========================================================
-# 1. SPLIT
-# =========================================================
+# 1. Читаємо датафрейм як і раніше
+df = pd.read_excel(file_path, engine="openpyxl", sheet_name=sheet_name)
 
-X_train, X_valid, y_train, y_valid = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42
-)
+# 2. Через Excel читаємо кольори
+app = xw.App(visible=False)
+app.display_alerts = False
+app.screen_updating = False
 
-# categorical features (якщо є)
-cat_cols = X.select_dtypes(include=["category", "object"]).columns.tolist()
+try:
+    wb = app.books.open(file_path)
+    ws = wb.sheets[sheet_name]
 
-# =========================================================
-# 2. MODEL
-# =========================================================
+    yellow_identifycodes = []
 
-model = LGBMRegressor(
-    n_estimators=2000,
-    learning_rate=0.03,
-    num_leaves=64,
-    max_depth=-1,
-    min_child_samples=30,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=0.1,
-    reg_lambda=0.1,
-    random_state=42,
-    n_jobs=-1
-)
+    # Визначимо останній рядок по колонці A
+    last_row = ws.range("A" + str(ws.cells.last_cell.row)).end("up").row
 
-# =========================================================
-# 3. TRAIN
-# =========================================================
+    # Проходимо по рядках, починаючи з 2-го (1-й — header)
+    for row in range(2, last_row + 1):
+        # Перевіряємо колір у колонці C = FIRM_NAME
+        color = ws.range(f"C{row}").color   # RGB tuple, наприклад (255, 255, 0)
 
-model.fit(
-    X_train,
-    y_train,
-    eval_set=[(X_train, y_train), (X_valid, y_valid)],
-    eval_metric="mae",
-    categorical_feature=cat_cols,
-    callbacks=[
-        # early stopping
-        lambda env: None
-    ]
-)
+        if color == (255, 255, 0):
+            identifycode = ws.range(f"A{row}").value
+            yellow_identifycodes.append(identifycode)
 
-# LightGBM early stopping через callbacks (новий API)
-from lightgbm import early_stopping, log_evaluation
+    wb.close()
 
-model.fit(
-    X_train,
-    y_train,
-    eval_set=[(X_valid, y_valid)],
-    eval_metric="mae",
-    categorical_feature=cat_cols,
-    callbacks=[
-        early_stopping(100),
-        log_evaluation(100)
-    ]
-)
+finally:
+    app.quit()
 
-# =========================================================
-# 4. PREDICT
-# =========================================================
+# 3. Нормалізуємо типи, щоб коректно відфільтрувати
+df["IDENTIFYCODE"] = pd.to_numeric(df["IDENTIFYCODE"], errors="coerce")
+yellow_identifycodes = pd.to_numeric(pd.Series(yellow_identifycodes), errors="coerce").dropna().tolist()
 
-y_pred = model.predict(X_valid)
+# 4. Видаляємо жовті рядки
+df_clean = df[~df["IDENTIFYCODE"].isin(yellow_identifycodes)].copy()
 
-# якщо у тебе y в log-просторі — розкоментуй:
-# y_pred = np.expm1(y_pred)
-# y_valid_real = np.expm1(y_valid)
+# 5. За потреби окремо самі жовті
+df_yellow = df[df["IDENTIFYCODE"].isin(yellow_identifycodes)].copy()
 
-# інакше:
-y_valid_real = y_valid
-
-# =========================================================
-# 5. METRICS
-# =========================================================
-
-mae = mean_absolute_error(y_valid_real, y_pred)
-rmse = mean_squared_error(y_valid_real, y_pred, squared=False)
-r2 = r2_score(y_valid_real, y_pred)
-
-print(f"MAE:  {mae:,.2f}")
-print(f"RMSE: {rmse:,.2f}")
-print(f"R2:   {r2:.4f}")
-
-# =========================================================
-# 6. FEATURE IMPORTANCE
-# =========================================================
-
-feat_imp = pd.DataFrame({
-    "feature": X.columns,
-    "importance": model.feature_importances_
-}).sort_values(by="importance", ascending=False)
-
-print("\nTop features:")
-print(feat_imp.head(20))
-
-# =========================================================
-# 7. VALIDATION TABLE
-# =========================================================
-
-val_df = pd.DataFrame({
-    "y_true": y_valid_real,
-    "y_pred": y_pred,
-})
-
-val_df["error"] = val_df["y_pred"] - val_df["y_true"]
-val_df["abs_error"] = val_df["error"].abs()
-
-print("\nValidation sample:")
-print(val_df.head())
+print("Жовтих рядків:", len(yellow_identifycodes))
+print("Після видалення рядків:", len(df_clean))
