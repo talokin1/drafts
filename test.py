@@ -1,49 +1,37 @@
-import pandas as pd
-import xlwings as xw
+class AssetsBucketModel:
+    def __init__(self, model, bucket_medians, cat_cols, cat_values=None):
+        self.model = model
+        self.bucket_medians = bucket_medians
+        self.cat_cols = cat_cols
+        self.cat_values = cat_values
 
-file_path = r"C:\Projects\(DS-644) Acquiring OTPay\Копія OTPay_Acquiring (002).xlsx"
-sheet_name = "data"
+    def predict(self, X):
+        X = X.copy()
 
-# 1. Читаємо датафрейм як і раніше
-df = pd.read_excel(file_path, engine="openpyxl", sheet_name=sheet_name)
+        # категоріальні фічі
+        for c in self.cat_cols:
+            if self.cat_values:
+                X[c] = pd.Categorical(X[c], categories=self.cat_values[c])
+            else:
+                X[c] = X[c].astype("category")
 
-# 2. Через Excel читаємо кольори
-app = xw.App(visible=False)
-app.display_alerts = False
-app.screen_updating = False
+        probs = self.model.predict_proba(X)
 
-try:
-    wb = app.books.open(file_path)
-    ws = wb.sheets[sheet_name]
+        # E[Y] через ймовірності
+        y_pred = np.zeros(len(X))
+        for i in range(len(self.bucket_medians)):
+            y_pred += probs[:, i] * self.bucket_medians[i]
 
-    yellow_identifycodes = []
+        return y_pred
+    
 
-    # Визначимо останній рядок по колонці A
-    last_row = ws.range("A" + str(ws.cells.last_cell.row)).end("up").row
+import joblib
 
-    # Проходимо по рядках, починаючи з 2-го (1-й — header)
-    for row in range(2, last_row + 1):
-        # Перевіряємо колір у колонці C = FIRM_NAME
-        color = ws.range(f"C{row}").color   # RGB tuple, наприклад (255, 255, 0)
+wrapped_model = AssetsBucketModel(
+    model=clf_model,
+    bucket_medians=bucket_medians,
+    cat_cols=cat_cols,
+    cat_values=cat_values
+)
 
-        if color == (255, 255, 0):
-            identifycode = ws.range(f"A{row}").value
-            yellow_identifycodes.append(identifycode)
-
-    wb.close()
-
-finally:
-    app.quit()
-
-# 3. Нормалізуємо типи, щоб коректно відфільтрувати
-df["IDENTIFYCODE"] = pd.to_numeric(df["IDENTIFYCODE"], errors="coerce")
-yellow_identifycodes = pd.to_numeric(pd.Series(yellow_identifycodes), errors="coerce").dropna().tolist()
-
-# 4. Видаляємо жовті рядки
-df_clean = df[~df["IDENTIFYCODE"].isin(yellow_identifycodes)].copy()
-
-# 5. За потреби окремо самі жовті
-df_yellow = df[df["IDENTIFYCODE"].isin(yellow_identifycodes)].copy()
-
-print("Жовтих рядків:", len(yellow_identifycodes))
-print("Після видалення рядків:", len(df_clean))
+joblib.dump(wrapped_model, "assets_bucket_model.pkl")
