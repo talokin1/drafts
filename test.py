@@ -1,123 +1,130 @@
 import pandas as pd
 import numpy as np
 
-def generate_business_excel(df_all, df_active, output_filename="Potential_Income_Report.xlsx"):
-    # Копіюємо дані, щоб не змінювати оригінали
-    df_all = df_all.copy()
-    df_active = df_active.copy()
+def generate_peter_matrix_report(df_active, output_filename="Peter_Matrix_Report.xlsx"):
+    df = df_active.copy()
     
-    # 1. Зведені таблиці (на основі всієї бази)
-    pivot_firm_type = pd.pivot_table(df_all, 
-                                     index='FIRM_TYPE', 
-                                     values=['IDENTIFYCODE', 'POTENTIAL_INCOME'],
-                                     aggfunc={'IDENTIFYCODE': 'count', 
-                                              'POTENTIAL_INCOME': 'sum'}).rename(columns={'IDENTIFYCODE': 'Кількість компаній'})
+    # 1. Створення категорій (Бакетування)
+    bins = [-np.inf, 300, 1000, 2500, 10000, np.inf]
+    labels = ['total hopeless', 'bad quality', 'grey zone', 'green zone', 'fantastic']
     
-    pivot_kved = pd.pivot_table(df_all, 
-                                index='KVED_DESCR', 
-                                values=['POTENTIAL_INCOME'],
-                                aggfunc=['count', 'sum'])
-    pivot_kved.columns = ['Кількість компаній', 'Сумарний потенціал']
-    pivot_kved = pivot_kved.sort_values(by='Сумарний потенціал', ascending=False).head(15)
+    # Використовуємо pd.Categorical, щоб зафіксувати строгий порядок сортування в таблицях
+    df['Fact_Peter_category'] = pd.cut(df['MONTHLY_INCOME'], bins=bins, labels=labels, right=False)
+    df['Predicted_Peter_category'] = pd.cut(df['POTENTIAL_INCOME'], bins=bins, labels=labels, right=False)
+    
+    df['Fact_Peter_category'] = pd.Categorical(df['Fact_Peter_category'], categories=labels, ordered=True)
+    df['Predicted_Peter_category'] = pd.Categorical(df['Predicted_Peter_category'], categories=labels, ordered=True)
 
-    # 2. Розрахунок точності (ТІЛЬКИ на основі active_clients)
-    df_active['ABS_ERROR'] = abs(df_active['MONTHLY_INCOME'] - df_active['POTENTIAL_INCOME'])
-    
-    # Уникаємо ділення на нуль
-    df_active['ERROR_PCT'] = np.where(df_active['MONTHLY_INCOME'] > 0, 
-                                      df_active['ABS_ERROR'] / df_active['MONTHLY_INCOME'], np.nan)
-    
-    # Сортуємо від найбільшої відсоткової помилки до найменшої (або за ABS_ERROR)
-    df_active = df_active.sort_values(by='ABS_ERROR', ascending=False)
-    
-    # Рахуємо портфельні метрики для бізнесу
-    total_actual_income = df_active['MONTHLY_INCOME'].sum()
-    total_predicted_income = df_active['POTENTIAL_INCOME'].sum()
-    total_abs_error = df_active['ABS_ERROR'].sum()
-    wmape = total_abs_error / total_actual_income if total_actual_income > 0 else 0
+    # 2. Розрахунок абсолютної матриці (Count)
+    count_matrix = pd.crosstab(df['Fact_Peter_category'], 
+                               df['Predicted_Peter_category'], 
+                               margins=True, 
+                               margins_name='Grand Total',
+                               dropna=False) # dropna=False гарантує, що всі класи будуть відображені, навіть якщо там 0
 
-    # 3. Запис у Excel
+    # 3. Розрахунок відносної матриці (Percentages)
+    total_clients = count_matrix.loc['Grand Total', 'Grand Total']
+    pct_matrix = count_matrix / total_clients
+
+    # 4. Бізнес-логіка: Матриця кольорів (Рядки - Факт, Колонки - Предикт)
+    # Згідно з вашим описом та скріншотом: 'G' - Green, 'Y' - Yellow, 'R' - Red
+    color_logic = [
+        ['G', 'G', 'R', 'R', 'R'],  # total hopeless
+        ['G', 'G', 'Y', 'R', 'R'],  # bad quality
+        ['Y', 'Y', 'G', 'G', 'G'],  # grey zone
+        ['R', 'R', 'Y', 'G', 'G'],  # green zone
+        ['R', 'R', 'R', 'G', 'G']   # fantastic
+    ]
+    
+    # Підрахунок загальних відсотків по зонах
+    zone_totals = {'G': 0.0, 'Y': 0.0, 'R': 0.0}
+    for i in range(5):
+        for j in range(5):
+            zone = color_logic[i][j]
+            val = pct_matrix.iloc[i, j]
+            if pd.notna(val):
+                zone_totals[zone] += val
+
+    # 5. Запис у Excel
     writer = pd.ExcelWriter(output_filename, engine='xlsxwriter')
     workbook = writer.book
+    worksheet = workbook.add_worksheet('Peter_Matrix')
     
     # Формати
-    money_fmt = workbook.add_format({'num_format': '#,##0.00 ₴'})
-    pct_fmt = workbook.add_format({'num_format': '0.00%'})
-    header_fmt = workbook.add_format({'bold': True, 'bg_color': '#1F497D', 'font_color': 'white', 'border': 1})
-    metric_title_fmt = workbook.add_format({'bold': True, 'font_size': 12, 'align': 'right'})
-    metric_val_fmt = workbook.add_format({'bold': True, 'font_size': 12, 'num_format': '#,##0.00 ₴', 'font_color': '#1F497D'})
-    metric_pct_fmt = workbook.add_format({'bold': True, 'font_size': 12, 'num_format': '0.00%', 'font_color': '#C00000'})
+    header_fmt = workbook.add_format({'bold': True, 'bg_color': '#00B0F0', 'font_color': 'white', 'border': 1, 'align': 'center'})
+    row_label_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFC000', 'border': 1})
+    count_fmt = workbook.add_format({'border': 1, 'num_format': '0'})
+    grand_total_fmt = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#E7E6E6'})
     
-    # --- ЛИСТ 1: Сирі дані ---
-    df_all.to_excel(writer, sheet_name='Raw_Data', index=False)
-    ws1 = writer.sheets['Raw_Data']
-    ws1.autofilter(0, 0, len(df_all), len(df_all.columns) - 1)
-    ws1.freeze_panes(1, 0)
+    # Формати для кольорових зон (відсотки)
+    pct_fmt_base = {'border': 1, 'num_format': '0.0%'}
+    fmt_green = workbook.add_format({**pct_fmt_base, 'bg_color': '#C4D79B'})  # Приглушений зелений
+    fmt_yellow = workbook.add_format({**pct_fmt_base, 'bg_color': '#FFFF00'}) # Жовтий
+    fmt_red = workbook.add_format({**pct_fmt_base, 'bg_color': '#FF0000', 'font_color': 'white'}) # Червоний
     
-    ws1.set_column('A:B', 15)
-    ws1.set_column('C:G', 18, money_fmt)
-    ws1.set_column('H:H', 30)
-    ws1.set_column('P:P', 18, money_fmt)
-    for col_num, value in enumerate(df_all.columns.values):
-        ws1.write(0, col_num, value, header_fmt)
+    fmt_map = {'G': fmt_green, 'Y': fmt_yellow, 'R': fmt_red}
 
-    # --- ЛИСТ 2: Зведена аналітика ---
-    pivot_firm_type.to_excel(writer, sheet_name='Summary_Dashboard', startrow=1, startcol=1)
-    pivot_kved.to_excel(writer, sheet_name='Summary_Dashboard', startrow=len(pivot_firm_type) + 5, startcol=1)
-    ws2 = writer.sheets['Summary_Dashboard']
-    ws2.write(0, 1, "Аналітика за типом компанії", workbook.add_format({'bold': True, 'font_size': 14}))
-    ws2.write(len(pivot_firm_type) + 4, 1, "Топ-15 галузей (КВЕД) за потенціалом", workbook.add_format({'bold': True, 'font_size': 14}))
-    ws2.set_column('B:B', 35)
-    ws2.set_column('C:E', 20, money_fmt)
+    # --- ЗАПИС МАТРИЦІ КІЛЬКОСТЕЙ (Count) ---
+    worksheet.write(1, 3, "Predictions", header_fmt)
+    worksheet.merge_range('D2:H2', "Predictions", header_fmt)
+    worksheet.write(2, 1, "Fact", row_label_fmt)
+    worksheet.merge_range('B3:B7', "Fact", row_label_fmt)
+    
+    # Заголовки колонок
+    for col_idx, col_name in enumerate(count_matrix.columns):
+        worksheet.write(2, col_idx + 2, col_name, header_fmt if col_name != 'Grand Total' else grand_total_fmt)
+        
+    # Запис даних кількості
+    for row_idx, row_name in enumerate(count_matrix.index):
+        worksheet.write(row_idx + 3, 2, row_name, grand_total_fmt if row_name == 'Grand Total' else row_label_fmt)
+        for col_idx, col_name in enumerate(count_matrix.columns):
+            val = count_matrix.iloc[row_idx, col_idx]
+            worksheet.write(row_idx + 3, col_idx + 3, val, grand_total_fmt if row_name == 'Grand Total' or col_name == 'Grand Total' else count_fmt)
 
-    # --- ЛИСТ 3: Точність моделі (на active_clients) ---
-    # Відступаємо 5 рядків зверху для виведення головних метрик
-    start_row = 6 
+    # --- ЗАПИС МАТРИЦІ ВІДСОТКІВ (Percentages) ---
+    start_row = 11
+    worksheet.merge_range(f'D{start_row+1}:H{start_row+1}', "Predictions", header_fmt)
+    worksheet.merge_range(f'B{start_row+2}:B{start_row+6}', "Fact", row_label_fmt)
     
-    cols_to_export = ['IDENTIFYCODE', 'FIRM_NAME', 'FIRM_TYPE', 'MONTHLY_INCOME', 'POTENTIAL_INCOME', 'ABS_ERROR', 'ERROR_PCT']
-    df_active[cols_to_export].to_excel(writer, sheet_name='Model_Accuracy', index=False, startrow=start_row)
-    ws3 = writer.sheets['Model_Accuracy']
-    
-    # Виводимо портфельні метрики (Dashboard зверху)
-    ws3.write(1, 1, "Сумарний фактичний дохід портфеля:", metric_title_fmt)
-    ws3.write(1, 2, total_actual_income, metric_val_fmt)
-    
-    ws3.write(2, 1, "Сумарний передбачений дохід:", metric_title_fmt)
-    ws3.write(2, 2, total_predicted_income, metric_val_fmt)
-    
-    ws3.write(3, 1, "Сумарна абсолютна помилка:", metric_title_fmt)
-    ws3.write(3, 2, total_abs_error, metric_val_fmt)
-    
-    ws3.write(4, 1, "WMAPE (Зважена похибка на портфель):", metric_title_fmt)
-    ws3.write(4, 2, wmape, metric_pct_fmt)
+    for col_idx, col_name in enumerate(pct_matrix.columns):
+        worksheet.write(start_row + 1, col_idx + 2, col_name, header_fmt if col_name != 'Grand Total' else grand_total_fmt)
+        
+    for row_idx, row_name in enumerate(pct_matrix.index):
+        worksheet.write(row_idx + start_row + 2, 2, row_name, grand_total_fmt if row_name == 'Grand Total' else row_label_fmt)
+        for col_idx, col_name in enumerate(pct_matrix.columns):
+            val = pct_matrix.iloc[row_idx, col_idx]
+            
+            # Логіка застосування кольору
+            if row_name == 'Grand Total' or col_name == 'Grand Total':
+                cell_fmt = grand_total_fmt
+            else:
+                # Отримуємо букву кольору з нашої матриці логіки
+                color_code = color_logic[row_idx][col_idx]
+                cell_fmt = fmt_map[color_code]
+                
+            worksheet.write(row_idx + start_row + 2, col_idx + 3, val, cell_fmt)
 
-    # Форматування таблиці точності
-    ws3.autofilter(start_row, 0, len(df_active) + start_row, len(cols_to_export) - 1)
-    ws3.freeze_panes(start_row + 1, 0)
+    # --- ЗВЕДЕНА СТАТИСТИКА ЗОН (Справа) ---
+    stats_row = start_row + 2
+    worksheet.write(stats_row, 9, "", fmt_green)
+    worksheet.write(stats_row, 10, zone_totals['G'], workbook.add_format({'num_format': '0.0%'}))
     
-    ws3.set_column('A:A', 15)
-    ws3.set_column('B:B', 30)
-    ws3.set_column('C:C', 15)
-    ws3.set_column('D:F', 20, money_fmt)
-    ws3.set_column('G:G', 15, pct_fmt)
+    worksheet.write(stats_row + 1, 9, "", fmt_yellow)
+    worksheet.write(stats_row + 1, 10, zone_totals['Y'], workbook.add_format({'num_format': '0.0%'}))
     
-    # Умовне форматування для відсотків помилки
-    ws3.conditional_format(start_row + 1, 6, len(df_active) + start_row, 6, {
-        'type': '3_color_scale',
-        'min_color': '#63BE7B',
-        'mid_color': '#FFEB84',
-        'max_color': '#F8696B',
-        'min_type': 'num', 'min_value': 0.0,
-        'mid_type': 'num', 'mid_value': 0.2, 
-        'max_type': 'num', 'max_value': 0.5  
-    })
-    
-    # Заголовки таблиці
-    for col_num, value in enumerate(cols_to_export):
-        ws3.write(start_row, col_num, value, header_fmt)
+    worksheet.write(stats_row + 2, 9, "", fmt_red)
+    worksheet.write(stats_row + 2, 10, zone_totals['R'], workbook.add_format({'num_format': '0.0%'}))
+
+    # Налаштування ширини колонок
+    worksheet.set_column('A:A', 2)
+    worksheet.set_column('B:B', 5)
+    worksheet.set_column('C:C', 15)
+    worksheet.set_column('D:H', 12)
+    worksheet.set_column('I:I', 5)
+    worksheet.set_column('J:J', 5)
 
     writer.close()
     print(f"Файл {output_filename} успішно згенеровано!")
 
-# Виклик функції:
-# generate_business_excel(df_all=your_full_dataframe, df_active=active_clients)
+# Виклик
+# generate_peter_matrix_report(active_clients)
