@@ -1,17 +1,42 @@
-y_pred_clf = clf.predict(X_val_clf)
-y_pred_proba_clf = clf.predict_proba(X_val_clf)[:, 1]
+# --- ВАШ ОРИГІНАЛЬНИЙ БЛОК РЕГРЕСІЇ (БЕЗ ЗМІН) ---
 
-print("\n" + "="*40)
-print("МЕТРИКИ КЛАСИФІКАТОРА")
-print("="*40)
+df_ = df.copy()
+df_ = df_[(df_["CURR_ACC"] > 0.05) & (df_["CURR_ACC"] < df_["CURR_ACC"].quantile(0.97))]
+df_["CURR_ACC"] = np.log1p(df_["CURR_ACC"])
 
-# ROC-AUC показує загальну здатність моделі ранжувати класи (особливо важливо при дисбалансі)
-roc_auc = roc_auc_score(y_val_clf, y_pred_proba_clf)
-print(f"ROC-AUC Score: {roc_auc:.4f}\n")
+# ... далі йде ваш train_test_split на df_ ...
+# ... далі йде reg.fit(...) ...
 
-print("Confusion Matrix (Матриця помилок):")
-# Формат: [[True Negative, False Positive],
-#          [False Negative, True Positive]]
-print(confusion_matrix(y_val_clf, y_pred_clf))
-print("\nClassification Report:")
-print(classification_report(y_val_clf, y_pred_clf))
+
+
+
+# --- ІНФЕРЕНС: ДВОСТУПІНЧАТИЙ ПРОГНОЗ ---
+
+# Для чесної валідації беремо вибірку з нулями (з Кроку 1)
+X_test_scoring = X_val_clf.copy()
+# Справжній прибуток (без логарифмів і усічень), витягуємо з оригінального df
+y_test_true = df.loc[X_test_scoring.index, "CURR_ACC"] 
+
+# Етап 1: Класифікатор приймає рішення (0 або 1)
+# Можна використовувати predict(), або predict_proba() > threshold для тонкого налаштування
+is_profitable = clf.predict(X_test_scoring)
+
+# Етап 2: Регресор прогнозує суму для ВСІХ
+log_profit = reg.predict(X_test_scoring)
+actual_profit = np.expm1(log_profit)
+
+# Етап 3: Математичне об'єднання E[Y] = P(Y>0) * E[Y|Y>0]
+final_predicted_profit = is_profitable * actual_profit
+
+# --- ФОРМУВАННЯ ЗВІТУ ---
+validation_results = pd.DataFrame({
+    'IDENTIFYCODE': X_test_scoring.index,
+    'True_Value': y_test_true, 
+    'Predicted': final_predicted_profit
+})
+
+# Рахуємо метрики на фінальних значеннях
+mae = mean_absolute_error(validation_results['True_Value'], validation_results['Predicted'])
+print(f"Combined MAE: {mae}")
+
+# ... далі запускаєте ваш код створення Excel (validation_results.copy()...)
