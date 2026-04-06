@@ -1,66 +1,80 @@
-with open(r"C:\Users\Mykola\Downloads\FOP.xml", 'r', encoding='utf-8') as f:
-    for _ in range(15):  # Виведемо перші 15 рядків
-        print(f.readline().strip())
+# --- НОВИЙ БЛОК: ТРЕНУВАННЯ КЛАСИФІКАТОРА ---
+
+# 1. Створюємо бінарний таргет на повному датасеті
+y_clf = (df["CURR_ACC"] > 0.05).astype(int)
+X_clf = df[features_to_use].copy() # features_to_use з вашого коду
+
+# 2. Спліт для класифікатора (ВАЖЛИВО: зберігаємо цей X_val_clf для фінального звіту!)
+X_train_clf, X_val_clf, y_train_clf, y_val_clf = train_test_split(
+    X_clf, y_clf, test_size=0.2, random_state=RANDOM_STATE, stratify=y_clf
+)
+
+# Форматування категорій для LightGBM
+cat_cols = [c for c in X_train_clf.columns if X_train_clf[c].dtype.name in ("object", "category")]
+for c in cat_cols:
+    X_train_clf[c] = X_train_clf[c].astype("category")
+    X_val_clf[c] = X_val_clf[c].astype("category")
+
+# 3. Навчання класифікатора
+clf = lgb.LGBMClassifier(
+    objective="binary",
+    n_estimators=1000,
+    learning_rate=0.03,
+    class_weight='balanced', # Компенсуємо дисбаланс нулів
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+clf.fit(
+    X_train_clf, y_train_clf,
+    eval_set=[(X_val_clf, y_val_clf)],
+    callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)]
+)
+print("Класифікатор натреновано!")
 
 
 
-'https://data.gov.ua/dataset/a1799820-195b-4982-8141-6e84f58103e7'
 
-import pandas as pd
-import xml.etree.ElementTree as ET
-import os
 
-def xml_to_csv_chunked(xml_path, csv_path, record_tag='SUBJECT', chunk_size=50000):
-    """
-    Парсить великий XML файл та зберігає його частинами у CSV.
-    """
-    print(f"Починаємо обробку файлу: {xml_path}")
-    
-    context = ET.iterparse(xml_path, events=('end',))
-    
-    batch = []
-    chunk_counter = 1
-    total_records = 0
-    write_header = not os.path.exists(csv_path) 
-    
-    for event, elem in context:
-        # Шукаємо завершення тегу <SUBJECT>
-        if elem.tag == record_tag:
-            row_data = {}
-            
-            # Збираємо всі "листочки" (NAME, STAN, RECORD тощо)
-            for child in elem:
-                # Якщо тег порожній (наприклад <EXCHANGE_DATA/>), запишемо None
-                row_data[child.tag] = child.text.strip() if child.text else None
-                
-            batch.append(row_data)
-            total_records += 1
-            
-            # Звільняємо пам'ять! (відрізаємо оброблену гілку)
-            elem.clear()
-            
-            # Якщо назбирали достатньо даних — скидаємо на диск
-            if len(batch) >= chunk_size:
-                df = pd.DataFrame(batch)
-                df.to_csv(csv_path, mode='a', index=False, header=write_header, encoding='utf-8')
-                
-                print(f"Збережено чанк {chunk_counter}: +{chunk_size} записів (Загалом: {total_records})")
-                
-                batch = [] 
-                write_header = False 
-                chunk_counter += 1
-                
-    # Зберігаємо "хвостик" даних, який залишився після останнього повного батчу
-    if batch:
-        df = pd.DataFrame(batch)
-        df.to_csv(csv_path, mode='a', index=False, header=write_header, encoding='utf-8')
-        print(f"Збережено фінальний чанк {chunk_counter}: +{len(batch)} записів (Загалом: {total_records})")
-        
-    print(f"\nОбробку завершено! Успішно перетворено {total_records} записів.")
+# --- ВАШ ОРИГІНАЛЬНИЙ БЛОК РЕГРЕСІЇ (БЕЗ ЗМІН) ---
 
-# === Запуск ===
-input_xml = r"C:\Users\Mykola\Downloads\UO.xml"
-output_csv = "UO_parsed.csv"
+df_ = df.copy()
+df_ = df_[(df_["CURR_ACC"] > 0.05) & (df_["CURR_ACC"] < df_["CURR_ACC"].quantile(0.97))]
+df_["CURR_ACC"] = np.log1p(df_["CURR_ACC"])
 
-# Викликаємо функцію з правильним тегом SUBJECT
-xml_to_csv_chunked(input_xml, output_csv, record_tag='SUBJECT', chunk_size=50000)
+# ... далі йде ваш train_test_split на df_ ...
+# ... далі йде reg.fit(...) ...
+
+
+
+
+# --- ІНФЕРЕНС: ДВОСТУПІНЧАТИЙ ПРОГНОЗ ---
+
+# Для чесної валідації беремо вибірку з нулями (з Кроку 1)
+X_test_scoring = X_val_clf.copy()
+# Справжній прибуток (без логарифмів і усічень), витягуємо з оригінального df
+y_test_true = df.loc[X_test_scoring.index, "CURR_ACC"] 
+
+# Етап 1: Класифікатор приймає рішення (0 або 1)
+# Можна використовувати predict(), або predict_proba() > threshold для тонкого налаштування
+is_profitable = clf.predict(X_test_scoring)
+
+# Етап 2: Регресор прогнозує суму для ВСІХ
+log_profit = reg.predict(X_test_scoring)
+actual_profit = np.expm1(log_profit)
+
+# Етап 3: Математичне об'єднання E[Y] = P(Y>0) * E[Y|Y>0]
+final_predicted_profit = is_profitable * actual_profit
+
+# --- ФОРМУВАННЯ ЗВІТУ ---
+validation_results = pd.DataFrame({
+    'IDENTIFYCODE': X_test_scoring.index,
+    'True_Value': y_test_true, 
+    'Predicted': final_predicted_profit
+})
+
+# Рахуємо метрики на фінальних значеннях
+mae = mean_absolute_error(validation_results['True_Value'], validation_results['Predicted'])
+print(f"Combined MAE: {mae}")
+
+# ... далі запускаєте ваш код створення Excel (validation_results.copy()...)
