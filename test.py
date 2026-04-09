@@ -1,121 +1,103 @@
-X_train_clf, X_val_clf, y_train_clf, y_val_clf
-X_train_reg, X_val_reg, y_train_reg, y_val_reg
+class TwoStageIncomeModel:
+    def __init__(
+        self,
+        clf_model,
+        reg_model,
+        bucket_medians,
+        cat_cols,
+        features_cols,
+        threshold=0.3,
+        cat_values=None
+    ):
+        self.clf_model = clf_model
+        self.reg_model = reg_model
+        self.bucket_medians = bucket_medians
+        self.cat_cols = cat_cols
+        self.features_cols = features_cols
+        self.threshold = threshold
+        self.cat_values = cat_values
 
-import lightgbm as lgb
-from sklearn.metrics import roc_auc_score, classification_report
+    def _prepare_X(self, X):
+        X = X.copy()
+        X = X[self.features_cols]
 
-# категорії
-cat_cols = [c for c in X_train_clf.columns if X_train_clf[c].dtype.name in ("object", "category")]
+        for c in self.cat_cols:
+            if self.cat_values:
+                X[c] = pd.Categorical(X[c], categories=self.cat_values[c])
+            else:
+                X[c] = X[c].astype("category")
 
-for c in cat_cols:
-    X_train_clf[c] = X_train_clf[c].astype("category")
-    X_val_clf[c] = X_val_clf[c].astype("category")
+        return X
 
-clf_model = lgb.LGBMClassifier(
-    n_estimators=1000,
-    learning_rate=0.03,
-    class_weight='balanced',
-    random_state=42,
-    n_jobs=-1
+    def predict(self, X):
+        X = self._prepare_X(X)
+
+        # --- Stage 1: classification
+        probs = self.clf_model.predict_proba(X)[:, 1]
+        mask = probs > self.threshold
+
+        # --- Stage 2: regression
+        y_pred = np.zeros(len(X))
+
+        if mask.sum() > 0:
+            X_selected = X[mask]
+
+            probs_reg = self.reg_model.predict_proba(X_selected)
+
+            y_pred_selected = np.zeros(len(X_selected))
+            for i in range(len(self.bucket_medians)):
+                y_pred_selected += probs_reg[:, i] * self.bucket_medians[i]
+
+            y_pred[mask] = y_pred_selected
+
+        return y_pred
+
+    def predict_proba_clf(self, X):
+        X = self._prepare_X(X)
+        return self.clf_model.predict_proba(X)[:, 1]
+    
+
+cat_values = {
+    c: X_train_clf[c].cat.categories for c in cat_cols
+}
+
+wrapped_model = TwoStageIncomeModel(
+    clf_model=clf_model,
+    reg_model=reg_model,
+    bucket_medians=bucket_medians,
+    cat_cols=cat_cols,
+    features_cols=final_features,
+    threshold=0.3,
+    cat_values=cat_values
 )
 
-clf_model.fit(
-    X_train_clf, y_train_clf,
-    eval_set=[(X_val_clf, y_val_clf)],
-    callbacks=[lgb.early_stopping(50)]
+joblib.dump(
+    wrapped_model,
+    r"...\TwoStage_Accounts_Model.pkl"
 )
 
-# --- метрики
-probs_clf = clf_model.predict_proba(X_val_clf)[:, 1]
-
-threshold = 0.3
-preds_clf = (probs_clf > threshold).astype(int)
-
-print("\n=== CLASSIFICATION ===")
-print("ROC-AUC:", roc_auc_score(y_val_clf, probs_clf))
-print(classification_report(y_val_clf, preds_clf))
 
 
-import numpy as np
-import pandas as pd
-from sklearn.metrics import mean_absolute_error
-
-# --- bins
-bins = [-1, 350, 550, 750, 925, 1100, 2000, 4000, np.inf]
-
-# --- target bins
-y_train_binned = pd.cut(y_train_reg, bins=bins, labels=False)
-y_val_binned   = pd.cut(y_val_reg, bins=bins, labels=False)
-
-# --- категорії
-for c in cat_cols:
-    if c in X_train_reg.columns:
-        X_train_reg[c] = X_train_reg[c].astype("category")
-        X_val_reg[c] = X_val_reg[c].astype("category")
-
-# --- bucket medians
-bucket_medians = y_train_reg.groupby(y_train_binned).median().to_dict()
-
-print("\nBucket medians:")
-print(bucket_medians)
-
-# --- model
-reg_model = lgb.LGBMClassifier(
-    objective='multiclass',
-    num_class=len(bins)-1,
-    n_estimators=1500,
-    learning_rate=0.03,
-    class_weight='balanced',
-    random_state=42,
-    n_jobs=-1
-)
-
-reg_model.fit(
-    X_train_reg, y_train_binned,
-    eval_set=[(X_val_reg, y_val_binned)],
-    callbacks=[lgb.early_stopping(50)]
-)
-
-# --- prediction (E[Y])
-probs_reg = reg_model.predict_proba(X_val_reg)
-
-y_pred_reg = np.zeros(len(X_val_reg))
-for i in range(len(bins)-1):
-    y_pred_reg += probs_reg[:, i] * bucket_medians[i]
-
-mae_reg = mean_absolute_error(y_val_reg, y_pred_reg)
-
-print("\n=== REGRESSION ===")
-print("MAE (E[Y]):", mae_reg)
 
 
-# --- classification
-probs_all = clf_model.predict_proba(X_val_clf)[:, 1]
-mask = probs_all > threshold
-
-# --- фінальний предикт
-y_pred_final = np.zeros(len(X_val_clf))
-
-# --- регресія тільки для тих, кого clf пропустив
-if mask.sum() > 0:
-    X_val_selected = X_val_clf[mask]
-
-    probs_selected = reg_model.predict_proba(X_val_selected)
-
-    y_pred_selected = np.zeros(len(X_val_selected))
-    for i in range(len(bins)-1):
-        y_pred_selected += probs_selected[:, i] * bucket_medians[i]
-
-    y_pred_final[mask] = y_pred_selected
 
 
-from sklearn.metrics import mean_absolute_error
 
-mae_final = mean_absolute_error(
-    y_val_clf * y_val_reg.reindex(X_val_clf.index, fill_value=0),  # true values
-    y_pred_final
-)
 
-print("\n=== FINAL PIPELINE ===")
-print("FINAL MAE:", mae_final)
 
+
+y_pred_final = wrapped_model.predict(X_val_clf)
+
+validation_results = pd.DataFrame({
+    "IDENTIFYCODE": X_val_clf.index,
+    "True_Value": y_val,
+    "Predicted": y_pred_final,
+    "CLF_Prob": wrapped_model.predict_proba_clf(X_val_clf)
+})
+
+
+print("MAE FINAL:", mean_absolute_error(y_val, y_pred_final))
+
+# тільки для тих, кого clf пропустив
+mask = y_pred_final > 0
+print("MAE NON-ZERO:", mean_absolute_error(y_val[mask], y_pred_final[mask]))
