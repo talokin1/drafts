@@ -1,3 +1,7 @@
+import joblib
+
+
+
 class TwoStageIncomeModel:
     def __init__(
         self,
@@ -61,43 +65,11 @@ cat_values = {
     c: X_train_clf[c].cat.categories for c in cat_cols
 }
 
-wrapped_model = TwoStageIncomeModel(
-    clf_model=clf_model,
-    reg_model=reg_model,
-    bucket_medians=bucket_medians,
-    cat_cols=cat_cols,
-    features_cols=final_features,
-    threshold=0.3,
-    cat_values=cat_values
-)
+clf_model = joblib.load("accounts_clf.pkl")
+reg_model = joblib.load("accounts_bucket.pkl")
 
-joblib.dump(
-    wrapped_model,
-    r"...\TwoStage_Accounts_Model.pkl"
-)
+final_model = TwoStageIncomeModel(clf_model, reg_model, threshold=0.5)
 
-
-
-
-
-
-
-
-
-
-
-y_pred_final = wrapped_model.predict(X_val_clf)
-
-validation_results = pd.DataFrame({
-    "IDENTIFYCODE": X_val_clf.index,
-    "True_Value": y_val,
-    "Predicted": y_pred_final,
-    "CLF_Prob": wrapped_model.predict_proba_clf(X_val_clf)
-})
-
-
-print("MAE FINAL:", mean_absolute_error(y_val, y_pred_final))
-
-# тільки для тих, кого clf пропустив
-mask = y_pred_final > 0
-print("MAE NON-ZERO:", mean_absolute_error(y_val[mask], y_pred_final[mask]))
+X["ACCOUNTS_POTENTIAL"] = final_model.predict(X)
+X["ACCOUNTS_PROB"] = final_model.predict_proba_clf(X)
+X["ACCOUNTS_NONZERO"] = (X["ACCOUNTS_PROB"] > 0.5).astype(int)
