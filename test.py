@@ -1,15 +1,9 @@
-# Бінарна класифікація
-y_clf = (df[TARGET_NAME] > 0).astype(int)
+y_train_clf = (df_train[TARGET_NAME] > 0).astype(int)
+y_val_clf   = (df_val[TARGET_NAME] > 0).astype(int)
 
-# Регресія тільки на прибуткових
-df_reg = df[df[TARGET_NAME] > 0].copy()
-df_reg = preprocess_target(df_reg)
+X_train_clf = df_train_proc[final_features]
+X_val_clf   = df_val_proc[final_features]
 
-y_reg = df_reg[TARGET_NAME]
-
-
-X_clf = df_proc[final_features]
-X_reg = df_reg_proc[final_features]
 
 
 from sklearn.model_selection import train_test_split
