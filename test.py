@@ -1,108 +1,87 @@
-import numpy as np
 import pandas as pd
-
-
-class TwoStageIncomeModel:
-    def __init__(
-        self,
-        clf_binary,
-        clf_multiclass,
-        bucket_medians,
-        cat_cols,
-        features_cols,
-        threshold=0.0,
-        cat_values=None
-    ):
-        self.clf_binary = clf_binary
-        self.clf_multiclass = clf_multiclass
-        self.bucket_medians = bucket_medians
-        self.cat_cols = cat_cols
-        self.features_cols = features_cols
-        self.threshold = threshold
-        self.cat_values = cat_values
-
-    def _prepare_X(self, X):
-        X = X.copy()
-        X = X[self.features_cols]
-
-        for c in self.cat_cols:
-            if self.cat_values:
-                X[c] = pd.Categorical(X[c], categories=self.cat_values[c])
-            else:
-                X[c] = X[c].astype("category")
-
-        return X
-
-    def predict(self, X):
-        X = self._prepare_X(X)
-
-        # ---- 1. classifier
-        p_income = self.clf_binary.predict_proba(X)[:, 1]
-
-        # ---- 2. multiclass regression
-        probs_multi = self.clf_multiclass.predict_proba(X)
-
-        medians = np.array([
-            self.bucket_medians[i]
-            for i in range(len(self.bucket_medians))
-        ])
-
-        y_log_expected = probs_multi @ medians
-        y_expected = np.expm1(y_log_expected)
-        y_expected = np.clip(y_expected, 0, None)
-
-        # ---- 3. final
-        final_pred = p_income * y_expected
-
-        # ---- 4. threshold (опціонально)
-        if self.threshold > 0:
-            final_pred[p_income < self.threshold] = 0
-
-        return final_pred
-
-    def predict_components(self, X):
-        """
-        Для дебагу / аналізу
-        """
-        X = self._prepare_X(X)
-
-        p_income = self.clf_binary.predict_proba(X)[:, 1]
-        probs_multi = self.clf_multiclass.predict_proba(X)
-
-        medians = np.array([
-            self.bucket_medians[i]
-            for i in range(len(self.bucket_medians))
-        ])
-
-        y_expected = np.expm1(probs_multi @ medians)
-
-        return p_income, y_expected
-
+import numpy as np
 import joblib
 
-model = TwoStageIncomeModel(
-    clf_binary=clf_binary,
-    clf_multiclass=clf_model,
-    bucket_medians=bucket_medians,
-    cat_cols=cat_cols,
-    features_cols=final_features,
-    threshold=0.3,
-    cat_values=cat_values
+# =========================
+# 1. ПІДГОТОВКА BUCKETS
+# =========================
+
+# беремо тільки probability колонки (БЕЗ IDENTIFYCODE)
+bucket_cols = external_liabs.loc[:, "0":">10M"].columns.to_list()
+
+# привести до float
+external_liabs[bucket_cols] = external_liabs[bucket_cols].apply(
+    pd.to_numeric, errors="coerce"
 )
 
-joblib.dump(model, "two_stage_income_model.pkl")    
+# max bucket
+external_liabs["max_bucket"] = external_liabs[bucket_cols].idxmax(axis=1)
 
-    
+# zero flag
+external_liabs["is_zero_liabs"] = external_liabs["max_bucket"] == "0"
 
-import joblib
 
-model = joblib.load("two_stage_income_model.pkl")
+# =========================
+# 2. MERGE В X
+# =========================
 
-preds = model.predict(df_new)
+X_ = X.merge(
+    external_liabs[["IDENTIFYCODE", "is_zero_liabs"]],
+    on="IDENTIFYCODE",
+    how="left"
+)
 
-df_new["ACCOUNT_POTENTIAL"] = preds
+# fix NaN + тип
+X_["is_zero_liabs"] = X_["is_zero_liabs"].fillna(False).astype(bool)
 
-cat_values = {
-    c: X_train[c].cat.categories
-    for c in cat_cols
-}
+
+# =========================
+# 3. SPLIT
+# =========================
+
+zero_clients = X_[X_["is_zero_liabs"]].copy()
+non_zero_clients = X_[~X_["is_zero_liabs"]].copy()
+
+
+# =========================
+# 4. LOAD MODEL
+# =========================
+
+# ВАЖЛИВО: клас має бути оголошений
+class LiabilitiesIncomeModel:
+    def __init__(self, model, cat_cols, feature_cols):
+        self.model = model
+        self.cat_cols = cat_cols
+        self.feature_cols = feature_cols
+
+    def predict(self, X):
+        X = X.copy()
+        X = X[self.feature_cols]
+
+        for c in self.cat_cols:
+            X[c] = X[c].astype("category")
+
+        y_log = self.model.predict(X)
+        return np.expm1(y_log)
+
+
+model = joblib.load(r"C:\Projects\DS-450 Corp_potential_income\scripts\models\pickle_models\Liabilities.pkl")
+
+
+# =========================
+# 5. PREDICT
+# =========================
+
+liabilities_pred = model.predict(non_zero_clients)
+
+non_zero_clients["LIABILITIES_POTENTIAL"] = liabilities_pred
+zero_clients["LIABILITIES_POTENTIAL"] = 0
+
+
+# =========================
+# 6. MERGE BACK
+# =========================
+
+final_liabs = pd.concat([zero_clients, non_zero_clients]).sort_index()
+
+X["LIABILITIES_POTENTIAL"] = final_liabs["LIABILITIES_POTENTIAL"]
