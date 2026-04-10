@@ -77,6 +77,21 @@ class TwoStageIncomeModel:
         y_expected = np.expm1(probs_multi @ medians)
 
         return p_income, y_expected
+
+import joblib
+
+model = TwoStageIncomeModel(
+    clf_binary=clf_binary,
+    clf_multiclass=clf_model,
+    bucket_medians=bucket_medians,
+    cat_cols=cat_cols,
+    features_cols=final_features,
+    threshold=0.3,
+    cat_values=cat_values
+)
+
+joblib.dump(model, "two_stage_income_model.pkl")    
+
     
 
 import joblib
