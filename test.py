@@ -1,87 +1,122 @@
-import pandas as pd
-import numpy as np
-import joblib
+# Бінарна класифікація
+y_clf = (df[TARGET_NAME] > 0).astype(int)
 
-# =========================
-# 1. ПІДГОТОВКА BUCKETS
-# =========================
+# Регресія тільки на прибуткових
+df_reg = df[df[TARGET_NAME] > 0].copy()
+df_reg = preprocess_target(df_reg)
 
-# беремо тільки probability колонки (БЕЗ IDENTIFYCODE)
-bucket_cols = external_liabs.loc[:, "0":">10M"].columns.to_list()
+y_reg = df_reg[TARGET_NAME]
 
-# привести до float
-external_liabs[bucket_cols] = external_liabs[bucket_cols].apply(
-    pd.to_numeric, errors="coerce"
+
+X_clf = df_proc[final_features]
+X_reg = df_reg_proc[final_features]
+
+
+from sklearn.model_selection import train_test_split
+
+X_train_clf, X_val_clf, y_train_clf, y_val_clf = train_test_split(
+    X_clf, y_clf, test_size=0.2, random_state=RANDOM_STATE, stratify=y_clf
 )
 
-# max bucket
-external_liabs["max_bucket"] = external_liabs[bucket_cols].idxmax(axis=1)
-
-# zero flag
-external_liabs["is_zero_liabs"] = external_liabs["max_bucket"] == "0"
-
-
-# =========================
-# 2. MERGE В X
-# =========================
-
-X_ = X.merge(
-    external_liabs[["IDENTIFYCODE", "is_zero_liabs"]],
-    on="IDENTIFYCODE",
-    how="left"
+X_train_reg, X_val_reg, y_train_reg, y_val_reg = train_test_split(
+    X_reg, y_reg, test_size=0.2, random_state=RANDOM_STATE
 )
 
-# fix NaN + тип
-X_["is_zero_liabs"] = X_["is_zero_liabs"].fillna(False).astype(bool)
+
+cat_cols = [c for c in X_train_clf.columns if X_train_clf[c].dtype.name in ("object", "category")]
+
+for c in cat_cols:
+    X_train_clf[c] = X_train_clf[c].astype("category")
+    X_val_clf[c] = X_val_clf[c].astype("category")
+
+    X_train_reg[c] = X_train_reg[c].astype("category")
+    X_val_reg[c] = X_val_reg[c].astype("category")
 
 
-# =========================
-# 3. SPLIT
-# =========================
 
-zero_clients = X_[X_["is_zero_liabs"]].copy()
-non_zero_clients = X_[~X_["is_zero_liabs"]].copy()
+import lightgbm as lgb
+
+clf_model = lgb.LGBMClassifier(
+    objective='binary',
+    n_estimators=500,
+    learning_rate=0.05,
+    num_leaves=31,
+    max_depth=6,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=RANDOM_STATE
+)
+
+clf_model.fit(
+    X_train_clf, y_train_clf,
+    eval_set=[(X_val_clf, y_val_clf)],
+    eval_metric='auc',
+    verbose=100
+)
 
 
-# =========================
-# 4. LOAD MODEL
-# =========================
 
-# ВАЖЛИВО: клас має бути оголошений
-class LiabilitiesIncomeModel:
-    def __init__(self, model, cat_cols, feature_cols):
-        self.model = model
+reg_model = lgb.LGBMRegressor(
+    objective='huber',   # як у тебе
+    n_estimators=700,
+    learning_rate=0.05,
+    num_leaves=31,
+    max_depth=6,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=RANDOM_STATE
+)
+
+reg_model.fit(
+    X_train_reg, y_train_reg,
+    eval_set=[(X_val_reg, y_val_reg)],
+    eval_metric='mae',
+    verbose=100
+)
+
+
+
+class TwoStageModel:
+    def __init__(self, clf_model, reg_model, cat_cols, features, threshold=0.5):
+        self.clf_model = clf_model
+        self.reg_model = reg_model
         self.cat_cols = cat_cols
-        self.feature_cols = feature_cols
+        self.features = features
+        self.threshold = threshold
 
-    def predict(self, X):
-        X = X.copy()
-        X = X[self.feature_cols]
-
+    def _prepare_X(self, X):
+        X = X[self.features].copy()
         for c in self.cat_cols:
             X[c] = X[c].astype("category")
+        return X
 
-        y_log = self.model.predict(X)
-        return np.expm1(y_log)
+    def predict(self, X):
+        X = self._prepare_X(X)
 
+        # 1. Класифікація
+        proba = self.clf_model.predict_proba(X)[:, 1]
+        is_positive = proba > self.threshold
 
-model = joblib.load(r"C:\Projects\DS-450 Corp_potential_income\scripts\models\pickle_models\Liabilities.pkl")
+        # 2. Регресія
+        preds = np.zeros(len(X))
+        preds[is_positive] = self.reg_model.predict(X[is_positive])
 
+        return preds, proba
+    
 
-# =========================
-# 5. PREDICT
-# =========================
+model = TwoStageModel(
+    clf_model=clf_model,
+    reg_model=reg_model,
+    cat_cols=cat_cols,
+    features=final_features,
+    threshold=0.3   # можеш тюнити
+)
 
-liabilities_pred = model.predict(non_zero_clients)
+preds, proba = model.predict(df_full)
 
-non_zero_clients["LIABILITIES_POTENTIAL"] = liabilities_pred
-zero_clients["LIABILITIES_POTENTIAL"] = 0
+df_full["POTENTIAL"] = preds
+df_full["PROBA"] = proba
 
+import joblib
 
-# =========================
-# 6. MERGE BACK
-# =========================
-
-final_liabs = pd.concat([zero_clients, non_zero_clients]).sort_index()
-
-X["LIABILITIES_POTENTIAL"] = final_liabs["LIABILITIES_POTENTIAL"]
+joblib.dump(model, "two_stage_model.pkl")
