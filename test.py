@@ -1,75 +1,63 @@
-import joblib
+cat_cols = [c for c in X_train_clf.columns if X_train_clf[c].dtype.name in ("object", "category")]
+
+for c in cat_cols:
+    X_train_clf[c] = X_train_clf[c].astype("category")
+    X_val_clf[c]   = X_val_clf[c].astype("category")
+
+
+clf_model = lgb.LGBMClassifier(
+    objective="binary",
+    n_estimators=1000,
+    learning_rate=0.03,
+    num_leaves=64,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=RANDOM_STATE
+)
+
+clf_model.fit(
+    X_train_clf,
+    y_train_clf,
+    eval_set=[(X_val_clf, y_val_clf)],
+    eval_metric="auc",
+    callbacks=[lgb.early_stopping(100, verbose=False)]
+)
+
+y_val_proba = clf_model.predict_proba(X_val_clf)[:, 1]
+
+print("ROC-AUC:", roc_auc_score(y_val_clf, y_val_proba))
+print(classification_report(y_val_clf, (y_val_proba > 0.5).astype(int)))
 
 
 
-class TwoStageIncomeModel:
-    def __init__(
-        self,
-        clf_model,
-        reg_model,
-        bucket_medians,
-        cat_cols,
-        features_cols,
-        threshold=0.3,
-        cat_values=None
-    ):
-        self.clf_model = clf_model
-        self.reg_model = reg_model
-        self.bucket_medians = bucket_medians
-        self.cat_cols = cat_cols
-        self.features_cols = features_cols
-        self.threshold = threshold
-        self.cat_values = cat_values
 
-    def _prepare_X(self, X):
-        X = X.copy()
-        X = X[self.features_cols]
 
-        for c in self.cat_cols:
-            if self.cat_values:
-                X[c] = pd.Categorical(X[c], categories=self.cat_values[c])
-            else:
-                X[c] = X[c].astype("category")
 
-        return X
 
-    def predict(self, X):
-        X = self._prepare_X(X)
 
-        # --- Stage 1: classification
-        probs = self.clf_model.predict_proba(X)[:, 1]
-        mask = probs > self.threshold
 
-        # --- Stage 2: regression
-        y_pred = np.zeros(len(X))
 
-        if mask.sum() > 0:
-            X_selected = X[mask]
 
-            probs_reg = self.reg_model.predict_proba(X_selected)
+for c in cat_cols:
+    X_train_reg[c] = X_train_reg[c].astype("category")
+    X_val_reg[c]   = X_val_reg[c].astype("category")
 
-            y_pred_selected = np.zeros(len(X_selected))
-            for i in range(len(self.bucket_medians)):
-                y_pred_selected += probs_reg[:, i] * self.bucket_medians[i]
+## my modelssss
 
-            y_pred[mask] = y_pred_selected
 
-        return y_pred
 
-    def predict_proba_clf(self, X):
-        X = self._prepare_X(X)
-        return self.clf_model.predict_proba(X)[:, 1]
-    
 
-cat_values = {
-    c: X_train_clf[c].cat.categories for c in cat_cols
-}
 
-clf_model = joblib.load("accounts_clf.pkl")
-reg_model = joblib.load("accounts_bucket.pkl")
 
-final_model = TwoStageIncomeModel(clf_model, reg_model, threshold=0.5)
 
-X["ACCOUNTS_POTENTIAL"] = final_model.predict(X)
-X["ACCOUNTS_PROB"] = final_model.predict_proba_clf(X)
-X["ACCOUNTS_NONZERO"] = (X["ACCOUNTS_PROB"] > 0.5).astype(int)
+
+
+
+
+
+proba_income = clf_model.predict_proba(X)[:, 1]
+probs_multi = reg_model.predict_proba(X)  # або як у тебе зроблено
+expected_value = np.sum(probs_multi * bucket_values, axis=1)
+
+final_pred = proba_income * expected_value
+
