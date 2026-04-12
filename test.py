@@ -1,81 +1,93 @@
-df_train_reg = df_train_proc[df_train[TARGET_NAME] > 0].copy()
-df_val_reg   = df_val_proc[df_val[TARGET_NAME] > 0].copy()
+class TwoStageFXModel:
+    def __init__(
+        self,
+        clf_model,
+        reg_model,
+        cat_cols,
+        features_cols,
+        threshold=0.3
+    ):
+        self.clf_model = clf_model
+        self.reg_model = reg_model
+        self.cat_cols = cat_cols
+        self.features_cols = features_cols
+        self.threshold = threshold
 
-# preprocess target (лог + кліпінг якщо є)
-df_train_reg = preprocess_target(df_train_reg)
-df_val_reg   = preprocess_target(df_val_reg)
+    def _prepare_X(self, X):
+        X = X.copy()
+        X = X[self.features_cols]
 
-X_train_reg = df_train_reg[final_features].copy()
-X_val_reg   = df_val_reg[final_features].copy()
+        for c in self.cat_cols:
+            X[c] = X[c].astype("category")
 
-y_train_reg = df_train_reg[TARGET_NAME]
-y_val_reg   = df_val_reg[TARGET_NAME]
+        return X
 
-cat_cols = [c for c in X_train_reg.columns if X_train_reg[c].dtype.name in ("object", "category")]
+    def predict(self, X):
+        X_prep = self._prepare_X(X)
 
-for c in cat_cols:
-    X_train_reg[c] = X_train_reg[c].astype("category")
-    X_val_reg[c] = X_val_reg[c].astype("category")
+        # 1. classification
+        proba = self.clf_model.predict_proba(X_prep)[:, 1]
+        is_profitable = proba > self.threshold
 
+        # 2. regression
+        preds = np.zeros(len(X_prep))
 
-reg = lgb.LGBMRegressor(
-    objective="regression_l1",
-    n_estimators=5000,
-    learning_rate=0.03,
-    num_leaves=31,
-    max_depth=6,
-    min_child_samples=20,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=1.0,
-    reg_lambda=1.0,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
+        if is_profitable.sum() > 0:
+            preds[is_profitable] = self.reg_model.predict(X_prep[is_profitable])
+
+        # 3. back to original scale
+        preds_final = np.expm1(preds)
+
+        return preds_final, proba
+    
+
+fx_model = TwoStageFXModel(
+    clf_model=clf_binary,
+    reg_model=reg,
+    cat_cols=cat_cols,
+    features_cols=final_features,
+    threshold=0.3   # або той, що підбереш
 )
 
-reg.fit(
-    X_train_reg,
-    y_train_reg,
-    eval_set=[(X_val_reg, y_val_reg)],
-    eval_metric="l1",
-    callbacks=[lgb.early_stopping(200, verbose=True)]
-)
+import joblib
+
+joblib.dump({
+    "model": fx_model,
+    "fitted_params": fitted_params   # щоб build_features повторити
+}, "fx_two_stage_model.pkl")
 
 
-y_pred_log = reg.predict(X_val_reg)
+import joblib
 
-y_val = np.expm1(y_val_reg)
-y_pred = np.expm1(y_pred_log)
+# load
+bundle = joblib.load("fx_two_stage_model.pkl")
 
-validation_results_reg = pd.DataFrame({
-    "IDENTIFYCODE": df_val_reg.index,
-    "True": y_val,
-    "Predicted": y_pred
+model = bundle["model"]
+fitted_params = bundle["fitted_params"]
+
+# preprocess
+df_full_proc, _ = build_features(df_full, fitted_params)
+
+# predict
+preds, proba = model.predict(df_full_proc)
+
+# фінальний результат
+df_result = pd.DataFrame({
+    "IDENTIFYCODE": df_full.index,
+    "FX_POTENTIAL": preds,
+    "FX_PROBA": proba
 })
 
 
-mae_log = mean_absolute_error(y_val_reg, y_pred_log)
-r2_log = r2_score(y_val_reg, y_pred_log)
-medae_log = median_absolute_error(y_val_reg, y_pred_log)
+preds, proba = fx_model.predict(df_val_proc)
 
-mae = mean_absolute_error(y_val, y_pred)
-medae = median_absolute_error(y_val, y_pred)
+y_true = df_val[TARGET_NAME].values
 
-eps = 1e-9
-mape = np.mean(np.abs(y_val - y_pred) / np.maximum(np.abs(y_val), eps))
-smape = np.mean(2.0 * np.abs(y_val - y_pred) / np.maximum(np.abs(y_val) + np.abs(y_pred), eps))
-
-
-print("=" * 60)
-print("REGRESSION METRICS (LOG SPACE)")
-print(f"MAE_log   : {mae_log:.5f}")
-print(f"MedAE_log : {medae_log:.5f}")
-print(f"R2_log    : {r2_log:.5f}")
-
-print("=" * 60)
-print("REGRESSION METRICS (ORIGINAL SCALE)")
-print(f"MAE   : {mae:.2f}")
-print(f"MedAE : {medae:.2f}")
-print(f"MAPE  : {mape:.4f}")
-print(f"SMAPE : {smape:.4f}")
-print("=" * 60)
+validation_results = pd.DataFrame({
+    "IDENTIFYCODE": df_val.index,
+    "True": y_true,
+    "Predicted": preds,
+    "Proba": proba,
+    "Is_Profitable_Pred": (proba > fx_model.threshold).astype(int),
+    "Is_Profitable_True": (y_true > 0).astype(int)
+})
