@@ -1,3 +1,40 @@
+import pandas as pd
+import numpy as np
+
+# Припускаємо, що df_inf та INFERENCE_THRESHOLD у тебе вже є
+
+# Додамо флаг для SUV/Кросоверів, бо заможні клієнти часто їх купують
+df_inf['is_suv'] = df_inf['category_name'].apply(lambda x: 1 if 'Позашляховик' in str(x) else 0)
+
+# Розширена агрегація
+client_results = df_inf.groupby('MOBILEPHONE').agg(
+    cars_count=('MOBILEPHONE', 'count'),
+    max_hnwi_prob=('hnwi_prob', 'max'),
+    is_potential_hnwi=('is_hnwi_car', 'max'),
+    
+    # Грошові метрики
+    avg_price=('price_usd', 'mean'),
+    max_price=('price_usd', 'max'),
+    total_garage_value=('price_usd', 'sum'), # Загальна вартість "гаража"
+    
+    # Лізинг / Кредит
+    avg_leasing_pay=('min_month_leasing_pay', 'mean'),
+    max_leasing_pay=('min_month_leasing_pay', 'max'),
+    
+    # Поведінкові патерни (частка авто з певними властивостями)
+    exchange_affinity=('exchange_possible', 'mean'), # Чи схильний клієнт до обміну?
+    has_report_rate=('has_report', 'mean'),          # Чи цікавлять його перевірені авто?
+    
+    # Категорійні флаги (чи є хоча б одне авто такого типу)
+    has_luxury=('mark_group', lambda x: 1 if 'Luxury' in x.values else 0),
+    has_suv=('is_suv', 'max')
+).reset_index()
+
+# Заповнюємо можливі NaN нулями (якщо лізингу немає тощо)
+client_results.fillna(0, inplace=True)
+
+
+
 features_to_profile = [
     'cars_count', 
     'avg_price', 'max_price', 'total_garage_value',
