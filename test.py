@@ -1,84 +1,113 @@
 import pandas as pd
-import numpy as np
 
-# Припускаємо, що df_inf та INFERENCE_THRESHOLD у тебе вже є
-
-# Додамо флаг для SUV/Кросоверів, бо заможні клієнти часто їх купують
-df_inf['is_suv'] = df_inf['category_name'].apply(lambda x: 1 if 'Позашляховик' in str(x) else 0)
-
-# Розширена агрегація
-client_results = df_inf.groupby('MOBILEPHONE').agg(
-    cars_count=('MOBILEPHONE', 'count'),
-    max_hnwi_prob=('hnwi_prob', 'max'),
-    is_potential_hnwi=('is_hnwi_car', 'max'),
+def generate_full_hnwi_excel(df_inf, client_results, portrait_df_numeric, top_leads, output_path="HNWI_Business_Report_Full.xlsx"):
+    """
+    Генерує фінальний Excel-файл з трьома листами:
+    1. Business Insights (Дашборд з ліфтами)
+    2. Top Leads (Для продажів)
+    3. Raw Info (Сирі дані по авто з флагом)
+    """
     
-    # Грошові метрики
-    avg_price=('price_usd', 'mean'),
-    max_price=('price_usd', 'max'),
-    total_garage_value=('price_usd', 'sum'), # Загальна вартість "гаража"
+    # Ініціалізація xlsxwriter
+    writer = pd.ExcelWriter(output_path, engine='xlsxwriter')
+    workbook = writer.book
     
-    # Лізинг / Кредит
-    avg_leasing_pay=('min_month_leasing_pay', 'mean'),
-    max_leasing_pay=('min_month_leasing_pay', 'max'),
-    
-    # Поведінкові патерни (частка авто з певними властивостями)
-    exchange_affinity=('exchange_possible', 'mean'), # Чи схильний клієнт до обміну?
-    has_report_rate=('has_report', 'mean'),          # Чи цікавлять його перевірені авто?
-    
-    # Категорійні флаги (чи є хоча б одне авто такого типу)
-    has_luxury=('mark_group', lambda x: 1 if 'Luxury' in x.values else 0),
-    has_suv=('is_suv', 'max')
-).reset_index()
-
-# Заповнюємо можливі NaN нулями (якщо лізингу немає тощо)
-client_results.fillna(0, inplace=True)
-
-
-
-features_to_profile = [
-    'cars_count', 
-    'avg_price', 'max_price', 'total_garage_value',
-    'avg_leasing_pay', 'max_leasing_pay',
-    'exchange_affinity', 'has_report_rate',
-    'has_luxury', 'has_suv'
-]
-
-portrait = []
-is_hnwi_mask = client_results['is_potential_hnwi'] == 1
-
-for feat in features_to_profile:
-    mean_all = client_results[feat].mean()
-    mean_hnwi = client_results[is_hnwi_mask][feat].mean()
-    lift = (mean_hnwi / mean_all) if mean_all > 0 else 0
-    
-    # Щоб не було ділення на 0, додамо безпеку
-    portrait.append({
-        'Ознака': feat,
-        'Середнє (Всі)': mean_all,
-        'Середнє (HNWI)': mean_hnwi,
-        'Lift': lift
+    # --- 1. Створюємо формати (Стилі) ---
+    header_fmt = workbook.add_format({
+        'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
+        'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1
     })
+    float_fmt = workbook.add_format({'num_format': '#,##0.00', 'border': 1})
+    pct_fmt = workbook.add_format({'num_format': '0.00%', 'border': 1})
+    lift_fmt = workbook.add_format({'num_format': '0.00"x"', 'border': 1, 'align': 'center'})
+    border_fmt = workbook.add_format({'border': 1})
+    highlight_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'bold': True})
+    
+    # ==========================================
+    # ЛИСТ 1: Business Insights (Дашборд)
+    # ==========================================
+    portrait_df_numeric.to_excel(writer, sheet_name='Business Insights', index=False)
+    ws_insights = writer.sheets['Business Insights']
+    
+    # Форматування заголовків
+    for col_num, value in enumerate(portrait_df_numeric.columns.values):
+        ws_insights.write(0, col_num, value, header_fmt)
+        
+    # Форматування колонок
+    ws_insights.set_column('A:A', 35, border_fmt) # Назва ознаки (зробили ширше)
+    ws_insights.set_column('B:C', 20, float_fmt)  # Середні значення
+    ws_insights.set_column('D:D', 15, lift_fmt)   # Lift
+    
+    # Колірна шкала для Lift
+    ws_insights.conditional_format(1, 3, len(portrait_df_numeric), 3, {
+        'type': '3_color_scale',
+        'min_color': '#F8696B', 'mid_color': '#FFEB84', 'max_color': '#63BE7B'
+    })
+    
+    # Додаємо глобальні метрики праворуч
+    hit_rate = client_results['is_potential_hnwi'].sum() / len(client_results)
+    
+    ws_insights.write('G2', 'Глобальна статистика', header_fmt)
+    ws_insights.write('G3', 'Всього унікальних клієнтів', border_fmt)
+    ws_insights.write('H3', len(client_results), float_fmt) # float_fmt додасть роздільники тисяч
+    ws_insights.write('G4', 'Знайдено потенційних HNWI', border_fmt)
+    ws_insights.write('H4', len(top_leads), float_fmt)
+    ws_insights.write('G5', 'Hit Rate (Конверсія)', border_fmt)
+    ws_insights.write('H5', hit_rate, pct_fmt)
+    
+    ws_insights.set_column('G:G', 30)
+    ws_insights.set_column('H:H', 15)
 
-portrait_df_numeric = pd.DataFrame(portrait)
+    # ==========================================
+    # ЛИСТ 2: Top Leads (Для продажів)
+    # ==========================================
+    top_leads.to_excel(writer, sheet_name='Top Leads', index=False)
+    ws_leads = writer.sheets['Top Leads']
+    
+    for col_num, value in enumerate(top_leads.columns.values):
+        ws_leads.write(0, col_num, value, header_fmt)
+        
+    ws_leads.set_column('A:Z', 18, border_fmt) # Базова ширина
+    
+    # Якщо є колонка з ймовірністю, додаємо DataBar
+    if 'max_hnwi_prob' in top_leads.columns:
+        prob_idx = top_leads.columns.get_loc('max_hnwi_prob')
+        ws_leads.conditional_format(1, prob_idx, len(top_leads), prob_idx, {
+            'type': 'data_bar', 'bar_color': '#63BE7B'
+        })
+        ws_leads.set_column(prob_idx, prob_idx, 18, pct_fmt)
+        
+    ws_leads.autofilter(0, 0, len(top_leads), len(top_leads.columns) - 1)
 
-# Мапінг для людських назв фічей у звіті
-feature_names_mapping = {
-    'cars_count': 'Кількість автомобілів',
-    'avg_price': 'Середня ціна авто ($)',
-    'max_price': 'Максимальна ціна авто ($)',
-    'total_garage_value': 'Сумарна вартість гаража ($)',
-    'avg_leasing_pay': 'Середній лізинговий платіж',
-    'max_leasing_pay': 'Макс. лізинговий платіж',
-    'exchange_affinity': 'Схильність до Trade-In (0-1)',
-    'has_report_rate': 'Частка авто з перевіркою (0-1)',
-    'has_luxury': 'Наявність Luxury авто (Флаг)',
-    'has_suv': 'Наявність SUV/Кросовера (Флаг)'
-}
-portrait_df_numeric['Ознака'] = portrait_df_numeric['Ознака'].map(feature_names_mapping).fillna(portrait_df_numeric['Ознака'])
+    # ==========================================
+    # ЛИСТ 3: Raw Info (Сирі дані по авто)
+    # ==========================================
+    # Скидаємо індекси, щоб не було зайвих колонок в Excel
+    df_inf_export = df_inf.copy()
+    
+    df_inf_export.to_excel(writer, sheet_name='Raw Info', index=False)
+    ws_raw = writer.sheets['Raw Info']
+    
+    for col_num, value in enumerate(df_inf_export.columns.values):
+        ws_raw.write(0, col_num, str(value), header_fmt)
+        
+    ws_raw.set_column('A:Z', 15) # Базова ширина колонок
+    ws_raw.autofilter(0, 0, len(df_inf_export), len(df_inf_export.columns) - 1)
+    
+    # Підсвічуємо цільову колонку (де знайдено HNWI авто)
+    target_col = 'is_hnwi_car' if 'is_hnwi_car' in df_inf_export.columns else 'is_hnwi'
+    if target_col in df_inf_export.columns:
+        target_idx = df_inf_export.columns.get_loc(target_col)
+        
+        # Якщо машина належить до HNWI (значення 1) - заливаємо клітинку світло-зеленим
+        ws_raw.conditional_format(1, target_idx, len(df_inf_export), target_idx, {
+            'type': 'cell', 'criteria': '==', 'value': 1,
+            'format': highlight_fmt
+        })
 
-# Вивід для тебе в Jupyter (щоб перевірити, що все ок)
-display(portrait_df_numeric.sort_values(by='Lift', ascending=False).style.format({
-    'Середнє (Всі)': "{:.2f}",
-    'Середнє (HNWI)': "{:.2f}",
-    'Lift': "{:.2f}x"
-}))
+    # Збереження
+    writer.close()
+    print(f"✅ Звіт успішно збережено: {output_path}")
+
+# --- ВИКЛИК ФУНКЦІЇ ---
+# generate_full_hnwi_excel(df_inf, client_results, portrait_df_numeric, top_leads)
