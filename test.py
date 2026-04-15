@@ -1,26 +1,30 @@
-from sklearn.calibration import CalibratedClassifierCV
-
-# 1. Твоя модель вже навчена (наприклад, після твого циклу або просто model.fit)
-# model = CatBoostClassifier(...)
-# model.fit(train_pool, ...)
-
-# 2. Створюємо калібратор. 
-# cv='prefit' гарантує, що CatBoost НЕ буде перенавчатися.
-# method='isotonic' найкраще підходить для дерев та великих вибірок.
-calibrated_model = CalibratedClassifierCV(
-    estimator=model, 
-    method='isotonic', 
-    cv='prefit' 
-)
-
-# 3. "Навчаємо" тільки саму шкалу калібрування на ВАЛІДАЦІЙНИХ даних!
-# Це відбувається миттєво, бо це просто підбір однієї функції.
-calibrated_model.fit(X_val, y_val)
-
-# 4. Тепер робимо інференс на нових даних
+# 1. Створюємо і чистимо X_inf ОДИН РАЗ
 expected_features = model.feature_names_
 X_inf = df_inf[expected_features].copy()
 
-# Використовуємо відкалібровану модель замість оригінальної
-# Тепер ці ймовірності будуть математично чесними від 0.0 до 1.0
-df_inf['hnwi_prob_calibrated'] = calibrated_model.predict_proba(X_inf)[:, 1]
+cat_features = X_inf.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
+X_inf[cat_features] = X_inf[cat_features].fillna('Missing').astype(str)
+
+INFERENCE_THRESHOLD = 0.418
+
+from sklearn.calibration import CalibratedClassifierCV
+
+# 2. Створюємо та фітимо калібратор
+calibrated_model = CalibratedClassifierCV(
+    estimator=model,
+    method='isotonic',
+    cv='prefit'
+)
+
+calibrated_model.fit(X_val, y_val)
+
+# ЗАВЖДИ ПЕРЕВІРЯЙ: X_val теж не повинен містити NaN у категоріальних фічах. 
+# Якщо fit() пройшов успішно, значить з X_val все ок.
+
+# 3. Інференс (використовуємо наш підготовлений X_inf, не перезаписуємо його!)
+df_inf['hnwi_prob'] = calibrated_model.predict_proba(X_inf)[:, 1]
+
+df_inf['is_hnwi_car'] = (df_inf['hnwi_prob'] >= INFERENCE_THRESHOLD).astype(int)
+
+print(f"Проскороно автомобілів: {len(df_inf)}")
+print(f"Знайдено HNWI-автомобілів: {df_inf['is_hnwi_car'].sum()}")
