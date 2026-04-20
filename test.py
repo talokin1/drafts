@@ -1,51 +1,31 @@
-from sklearn.metrics import mean_absolute_error, r2_score, median_absolute_error
-import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
 
-print("=" * 60)
-print(" ДІАГНОСТИКА У ЗВИЧАЙНОМУ ПРОСТОРІ (РЕАЛЬНІ ГРОШІ)")
-print("=" * 60)
+G = nx.DiGraph()
 
-# ==========================================
-# ЕТАП 2: Регресор (Тільки активні клієнти)
-# ==========================================
-# Повертаємо цільову змінну та прогнози з лог-простору
-y_train_reg_real = np.expm1(y_train_reg_log)
-y_val_reg_real = np.expm1(y_val_reg_log)
+edges = [
+    ("S1","S2",0.1),
+    ("S1","S3",0.2),
+    ("S1","S4",0.5),
+    ("S2","S1",0.2),
+    ("S2","S3",0.4),
+    ("S2","S4",0.1),
+    ("S3","S2",0.5),
+    ("S3","S4",0.1),
+    ("S4","S1",0.3),
+    ("S4","S2",0.1),
+    ("S4","S3",0.2)
+]
 
-train_reg_preds_real = np.expm1(train_reg_preds_log)
-val_reg_preds_real = np.expm1(val_reg_preds_log)
+for u,v,w in edges:
+    G.add_edge(u,v,weight=w)
 
-train_mae_reg_real = mean_absolute_error(y_train_reg_real, train_reg_preds_real)
-val_mae_reg_real = mean_absolute_error(y_val_reg_real, val_reg_preds_real)
+pos = nx.spring_layout(G)
 
-train_medae_reg_real = median_absolute_error(y_train_reg_real, train_reg_preds_real)
-val_medae_reg_real = median_absolute_error(y_val_reg_real, val_reg_preds_real)
+nx.draw(G, pos, with_labels=True, node_size=2000)
+nx.draw_networkx_edge_labels(
+    G, pos,
+    edge_labels={(u,v):d['weight'] for u,v,d in G.edges(data=True)}
+)
 
-train_r2_reg_real = r2_score(y_train_reg_real, train_reg_preds_real)
-val_r2_reg_real = r2_score(y_val_reg_real, val_reg_preds_real)
-
-print(f"\n[Stage 2: Regressor (Only Active Clients, ORIGINAL SPACE)]")
-print(f"MAE      | Train: {train_mae_reg_real:,.2f} | Val: {val_mae_reg_real:,.2f} | Різниця: {val_mae_reg_real - train_mae_reg_real:,.2f}")
-print(f"MedAE    | Train: {train_medae_reg_real:,.2f} | Val: {val_medae_reg_real:,.2f} | (Медіанна похибка)")
-print(f"R2 Score | Train: {train_r2_reg_real:.4f} | Val: {val_r2_reg_real:.4f} | (Обережно: чутливо до викидів!)")
-
-# ==========================================
-# ЕТАП 3: Весь Пайплайн (Всі клієнти, включно з нулями)
-# ==========================================
-# y_train_raw та y_val_raw вже у звичайному просторі
-# train_pred_final та val_pred_final теж (ми робили expm1 у попередньому скрипті)
-
-train_mae_pipe_real = mean_absolute_error(y_train_raw, train_pred_final)
-val_mae_pipe_real = mean_absolute_error(y_val_raw, val_pred_final)
-
-train_medae_pipe_real = median_absolute_error(y_train_raw, train_pred_final)
-val_medae_pipe_real = median_absolute_error(y_val_raw, val_pred_final)
-
-train_r2_pipe_real = r2_score(y_train_raw, train_pred_final)
-val_r2_pipe_real = r2_score(y_val_raw, val_pred_final)
-
-print(f"\n[Combined Pipeline (All Clients, ORIGINAL SPACE)]")
-print(f"MAE      | Train: {train_mae_pipe_real:,.2f} | Val: {val_mae_pipe_real:,.2f} | Різниця: {val_mae_pipe_real - train_mae_pipe_real:,.2f}")
-print(f"MedAE    | Train: {train_medae_pipe_real:,.2f} | Val: {val_medae_pipe_real:,.2f} | (Медіанна похибка)")
-print(f"R2 Score | Train: {train_r2_pipe_real:.4f} | Val: {val_r2_pipe_real:.4f}")
-print("=" * 60)
+plt.show()
