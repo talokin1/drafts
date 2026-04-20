@@ -2,117 +2,115 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 import matplotlib.pyplot as plt
-
+import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, r2_score, median_absolute_error
-
-RANDOM_STATE = 42
-THRESHOLD = 50 # Бізнес-поріг. Суми менші за 50 грн вважаємо "пустими" рахунками
+from sklearn.metrics import mean_absolute_error, median_absolute_error, r2_score
 
 # ==========================================
-# 1. ПРЕПРОЦЕСИНГ ТАРГЕТУ (Критично для Tweedie)
+# 0. СИМУЛЯЦІЯ ДАНИХ (для відтворюваності)
 # ==========================================
-# Відсікаємо від'ємні значення (овердрафти не є пасивами)
-y_clean = np.clip(y, a_min=0, a_max=None)
+np.random.seed(42)
+n_samples = 30000
+X = pd.DataFrame(np.random.randn(n_samples, 10), columns=[f'feature_{i}' for i in range(10)])
 
-# Обнуляємо мікро-залишки, формуючи чіткий zero-inflated розподіл
+# Генеруємо таргет: 25% нулів, решта - важкий хвіст (Lognormal)
+y = np.zeros(n_samples)
+is_positive = np.random.rand(n_samples) > 0.25
+# Робимо таргет залежним від фічей, щоб моделі було що вчити
+y[is_positive] = np.exp(6 + X.loc[is_positive, 'feature_0'] * 1.5 + np.random.randn(is_positive.sum()) * 1.2)
+y_series = pd.Series(y)
+
+# ==========================================
+# 1. ПРЕПРОЦЕСИНГ ТАРГЕТУ
+# ==========================================
+THRESHOLD = 50 # Відсікаємо мікрозалишки
+y_clean = np.clip(y_series, a_min=0, a_max=None)
 y_clean = np.where(y_clean < THRESHOLD, 0, y_clean)
 
-
 # ==========================================
-# 2. БЕЗПЕЧНА СТРАТИФІКАЦІЯ
+# 2. СТРАТИФІКАЦІЯ ТА СПЛІТ
 # ==========================================
-# Робимо кастомні біни, щоб гарантовано відокремити нулі від 'багатих'
+# Розбиваємо ненульові значення на квантилі для надійної стратифікації
 non_zero_y = y_clean[y_clean > 0]
-percentiles = list(np.percentile(non_zero_y, [25, 50, 75, 90]))
+percentiles = list(np.percentile(non_zero_y, [25, 50, 75, 90, 95]))
 bins = [-np.inf, 0] + percentiles + [np.inf]
-
 y_bins = pd.cut(y_clean, bins=bins, labels=False)
 
-
-# ==========================================
-# 3. SPLIT ТА ПІДГОТОВКА ФІЧЕЙ
-# ==========================================
-# ЗВЕРНИ УВАГУ: Передаємо y_clean (оригінальний масштаб), а не логарифм!
 X_train, X_val, y_train, y_val = train_test_split(
-    X, y_clean, test_size=0.2, random_state=RANDOM_STATE, stratify=y_bins
+    X, y_clean, test_size=0.2, random_state=42, stratify=y_bins
 )
 
-X_train_final = X_train.copy()
-X_val_final = X_val.copy()
-
-cat_cols = [c for c in X_train_final.columns if X_train_final[c].dtype.name in ("object", "category")]
-
-for c in cat_cols:
-    X_train_final[c] = X_train_final[c].astype("category")
-    X_val_final[c] = X_val_final[c].astype("category")
-
-
 # ==========================================
-# 4. TWEEDIE АРХІТЕКТУРА
+# 3. НАВЧАННЯ МОДЕЛІ TWEEDIE
 # ==========================================
 reg = lgb.LGBMRegressor(
     objective="tweedie",
-    tweedie_variance_power=1.5, # Гіперпараметр p. 1.5 - класика для балансів.
-    n_estimators=5000,
-    learning_rate=0.03,
+    tweedie_variance_power=1.5, # Чим ближче до 2, тим сильніше модель поважає хвіст
+    n_estimators=1000,
+    learning_rate=0.05,
     num_leaves=31,
     min_child_samples=20,
     subsample=0.8,
-    categorical_feature=cat_cols, # Вказуємо явно для уникнення ворнінгів
     colsample_bytree=0.8,
-    random_state=RANDOM_STATE,
+    random_state=42,
     n_jobs=-1
 )
 
-# Навчаємо на ОРИГІНАЛЬНИХ значеннях
+# Навчаємо виключно на оригінальних (не логарифмованих) даних!
 reg.fit(
-    X_train_final,
-    y_train,
-    eval_set=[(X_val_final, y_val)],
-    eval_metric="tweedie", # Функція втрат враховує дисперсію хвостів
-    callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=True)]
+    X_train, y_train,
+    eval_set=[(X_val, y_val)],
+    eval_metric="tweedie",
+    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
 )
 
-
 # ==========================================
-# 5. ОЦІНКА ТА АНАЛІЗ
+# 4. ПРЕДИКТ ТА РОЗРАХУНОК МЕТРИК
 # ==========================================
-# Предикт повертає значення в оригінальному масштабі (вбудований exp під капотом)
-y_pred = reg.predict(X_val_final)
+y_pred = reg.predict(X_val)
+y_pred = np.clip(y_pred, 0, None) # Захист від мікро-від'ємних значень
 
-# Оскільки Твіді може інколи видавати мікро-від'ємні предикати через наближення:
-y_pred = np.clip(y_pred, 0, None)
-
-# Для того, щоб адекватно ПОРІВНЯТИ метрики з твоєю минулою моделлю, 
-# ми тимчасово логарифмуємо результати суто для розрахунку R2 та побудови графіка
+# Для метрик та візуалізації переходимо в log-простір
 y_val_log = np.log1p(y_val)
 y_pred_log = np.log1p(y_pred)
 
-mae_log = mean_absolute_error(y_val_log, y_pred_log)
-r2_log = r2_score(y_val_log, y_pred_log)
-medae_log = median_absolute_error(y_val_log, y_pred_log)
-
-mae_orig = mean_absolute_error(y_val, y_pred)
-medae_orig = median_absolute_error(y_val, y_pred)
-
 print("=" * 60)
-print("METRICS IN LOG-SPACE (for comparing with previous model)")
-print(f"MAE_log   : {mae_log:.5f}")
-print(f"MedAE_log : {medae_log:.5f}")
-print(f"R2_log    : {r2_log:.5f}")
+print("ОЦІНКА ЯКОСТІ (LOG-SPACE)")
+print("=" * 60)
+print(f"MAE (log)   : {mean_absolute_error(y_val_log, y_pred_log):.4f}")
+print(f"MedAE (log) : {median_absolute_error(y_val_log, y_pred_log):.4f}")
+print(f"R² Score    : {r2_score(y_val_log, y_pred_log):.4f}")
 print("-" * 60)
-print("METRICS IN ORIGINAL SPACE")
-print(f"MAE_orig  : {mae_orig:,.2f}")
-print(f"MedAE_orig: {medae_orig:,.2f}")
+
+# Додаткова бізнес-метрика: Точність класифікації "Нуль vs Не нуль"
+val_is_zero = (y_val == 0)
+pred_is_zero = (y_pred < THRESHOLD)
+accuracy_zeros = np.mean(val_is_zero == pred_is_zero)
+print(f"Точність розпізнавання нулів/пустих рахунків: {accuracy_zeros:.1%}")
 print("=" * 60)
 
-# Візуалізація
-plt.figure(figsize=(8, 6))
-plt.scatter(y_val_log, y_pred_log, alpha=0.3, s=10)
-mn, mx = float(np.min(y_val_log)), float(np.max(y_val_log))
-plt.plot([mn, mx], [mn, mx], "r--")
-plt.xlabel("True CURR_ACC (log1p)")
-plt.ylabel("Predicted CURR_ACC (log1p)")
-plt.title("Tweedie Regression: True vs Predicted (Visualized in log1p space)")
+# ==========================================
+# 5. ВІЗУАЛІЗАЦІЯ РОЗПОДІЛІВ
+# ==========================================
+sns.set_theme(style="whitegrid")
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Графік 1: True vs Predicted (Scatter)
+axes[0].scatter(y_val_log, y_pred_log, alpha=0.2, s=15, color='royalblue', label='Predictions')
+mn, mx = 0, max(y_val_log.max(), y_pred_log.max()) + 1
+axes[0].plot([mn, mx], [mn, mx], 'r--', linewidth=2, label='Ideal Fit')
+axes[0].set_title("Scatter: Predicted vs Actual (log1p space)", fontsize=14)
+axes[0].set_xlabel("True Target $log(1 + Y)$")
+axes[0].set_ylabel("Predicted Target $log(1 + \hat{Y})$")
+axes[0].legend()
+
+# Графік 2: Kernel Density Estimation (Збіг розподілів)
+sns.kdeplot(y_val_log, color='crimson', label='True Distribution', fill=True, alpha=0.1, ax=axes[1], linewidth=2)
+sns.kdeplot(y_pred_log, color='navy', label='Tweedie Prediction', linestyle='--', ax=axes[1], linewidth=2)
+axes[1].set_title("Distribution Match: True vs Predicted", fontsize=14)
+axes[1].set_xlabel("$log(1 + Y)$")
+axes[1].set_ylabel("Density")
+axes[1].legend()
+
+plt.tight_layout()
 plt.show()
