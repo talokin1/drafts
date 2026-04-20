@@ -1,71 +1,51 @@
+from sklearn.metrics import mean_absolute_error, r2_score, median_absolute_error
 import numpy as np
-import pandas as pd
-from sklearn.metrics import roc_auc_score, mean_absolute_error, r2_score
 
 print("=" * 60)
-print(" ДІАГНОСТИКА ПЕРЕНАВЧАННЯ (TRAIN vs VAL)")
+print(" ДІАГНОСТИКА У ЗВИЧАЙНОМУ ПРОСТОРІ (РЕАЛЬНІ ГРОШІ)")
 print("=" * 60)
 
 # ==========================================
-# ЕТАП 1: Оцінка Класифікатора (Stage 1)
+# ЕТАП 2: Регресор (Тільки активні клієнти)
 # ==========================================
-# Прогнози для трейну та валідації
-train_clf_probs = clf.predict_proba(X_train)[:, 1]
-val_clf_probs = clf.predict_proba(X_val)[:, 1]
+# Повертаємо цільову змінну та прогнози з лог-простору
+y_train_reg_real = np.expm1(y_train_reg_log)
+y_val_reg_real = np.expm1(y_val_reg_log)
 
-# Метрики
-train_auc = roc_auc_score(y_train_clf, train_clf_probs)
-val_auc = roc_auc_score(y_val_clf, val_clf_probs)
+train_reg_preds_real = np.expm1(train_reg_preds_log)
+val_reg_preds_real = np.expm1(val_reg_preds_log)
 
-print(f"\n[Stage 1: Classifier]")
-print(f"ROC-AUC  | Train: {train_auc:.4f} | Val: {val_auc:.4f} | Різниця: {train_auc - val_auc:.4f}")
+train_mae_reg_real = mean_absolute_error(y_train_reg_real, train_reg_preds_real)
+val_mae_reg_real = mean_absolute_error(y_val_reg_real, val_reg_preds_real)
 
+train_medae_reg_real = median_absolute_error(y_train_reg_real, train_reg_preds_real)
+val_medae_reg_real = median_absolute_error(y_val_reg_real, val_reg_preds_real)
 
-# ==========================================
-# ЕТАП 2: Оцінка Регресора (Stage 2)
-# ==========================================
-# Регресор навчався ТІЛЬКИ на активних клієнтах (де y >= THRESHOLD)
-train_reg_preds_log = reg.predict(X_train_reg)
-val_reg_preds_log = reg.predict(X_val_reg)
+train_r2_reg_real = r2_score(y_train_reg_real, train_reg_preds_real)
+val_r2_reg_real = r2_score(y_val_reg_real, val_reg_preds_real)
 
-train_mae_reg = mean_absolute_error(y_train_reg_log, train_reg_preds_log)
-val_mae_reg = mean_absolute_error(y_val_reg_log, val_reg_preds_log)
-
-train_r2_reg = r2_score(y_train_reg_log, train_reg_preds_log)
-val_r2_reg = r2_score(y_val_reg_log, val_reg_preds_log)
-
-print(f"\n[Stage 2: Regressor (Only Active Clients, Log-Space)]")
-print(f"MAE      | Train: {train_mae_reg:.4f} | Val: {val_mae_reg:.4f} | Різниця: {val_mae_reg - train_mae_reg:.4f}")
-print(f"R2 Score | Train: {train_r2_reg:.4f} | Val: {val_r2_reg:.4f} | Різниця: {train_r2_reg - val_r2_reg:.4f}")
-
+print(f"\n[Stage 2: Regressor (Only Active Clients, ORIGINAL SPACE)]")
+print(f"MAE      | Train: {train_mae_reg_real:,.2f} | Val: {val_mae_reg_real:,.2f} | Різниця: {val_mae_reg_real - train_mae_reg_real:,.2f}")
+print(f"MedAE    | Train: {train_medae_reg_real:,.2f} | Val: {val_medae_reg_real:,.2f} | (Медіанна похибка)")
+print(f"R2 Score | Train: {train_r2_reg_real:.4f} | Val: {val_r2_reg_real:.4f} | (Обережно: чутливо до викидів!)")
 
 # ==========================================
-# ЕТАП 3: Оцінка Всього Пайплайну (Combined Pipeline)
+# ЕТАП 3: Весь Пайплайн (Всі клієнти, включно з нулями)
 # ==========================================
-# Будуємо фінальний прогноз для всієї тренувальної вибірки
-train_class_preds = clf.predict(X_train)
-train_reg_preds_all = np.expm1(reg.predict(X_train)) # Прогноз регресора для всіх у звичайному просторі
-train_pred_final = np.where(train_class_preds == 1, train_reg_preds_all, 0)
+# y_train_raw та y_val_raw вже у звичайному просторі
+# train_pred_final та val_pred_final теж (ми робили expm1 у попередньому скрипті)
 
-# Переводимо в логарифмічний простір для коректного порівняння масштабів
-y_train_final_log = np.log1p(y_train_raw)
-train_pred_final_log = np.log1p(train_pred_final)
+train_mae_pipe_real = mean_absolute_error(y_train_raw, train_pred_final)
+val_mae_pipe_real = mean_absolute_error(y_val_raw, val_pred_final)
 
-# Метрики пайплайну
-train_mae_pipe = mean_absolute_error(y_train_final_log, train_pred_final_log)
-# val_mae_pipe беремо з твого попереднього коду (або рахуємо заново)
-val_class_preds = clf.predict(X_val)
-val_reg_preds_all = np.expm1(reg.predict(X_val))
-val_pred_final = np.where(val_class_preds == 1, val_reg_preds_all, 0)
+train_medae_pipe_real = median_absolute_error(y_train_raw, train_pred_final)
+val_medae_pipe_real = median_absolute_error(y_val_raw, val_pred_final)
 
-y_val_final_log = np.log1p(y_val_raw)
-val_pred_final_log = np.log1p(val_pred_final)
+train_r2_pipe_real = r2_score(y_train_raw, train_pred_final)
+val_r2_pipe_real = r2_score(y_val_raw, val_pred_final)
 
-val_mae_pipe = mean_absolute_error(y_val_final_log, val_pred_final_log)
-train_r2_pipe = r2_score(y_train_final_log, train_pred_final_log)
-val_r2_pipe = r2_score(y_val_final_log, val_pred_final_log)
-
-print(f"\n[Combined Pipeline (All Clients, Log-Space)]")
-print(f"MAE      | Train: {train_mae_pipe:.4f} | Val: {val_mae_pipe:.4f} | Різниця: {val_mae_pipe - train_mae_pipe:.4f}")
-print(f"R2 Score | Train: {train_r2_pipe:.4f} | Val: {val_r2_pipe:.4f} | Різниця: {train_r2_pipe - val_r2_pipe:.4f}")
+print(f"\n[Combined Pipeline (All Clients, ORIGINAL SPACE)]")
+print(f"MAE      | Train: {train_mae_pipe_real:,.2f} | Val: {val_mae_pipe_real:,.2f} | Різниця: {val_mae_pipe_real - train_mae_pipe_real:,.2f}")
+print(f"MedAE    | Train: {train_medae_pipe_real:,.2f} | Val: {val_medae_pipe_real:,.2f} | (Медіанна похибка)")
+print(f"R2 Score | Train: {train_r2_pipe_real:.4f} | Val: {val_r2_pipe_real:.4f}")
 print("=" * 60)
