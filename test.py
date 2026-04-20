@@ -1,124 +1,118 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
+import lightgbm as lgb
 import matplotlib.pyplot as plt
-import seaborn as sns
-import matplotlib.ticker as ticker
 
-# Налаштування стилю для графіків (виглядає професійно для звітів)
-sns.set_theme(style="whitegrid", palette="muted")
-plt.rcParams.update({'font.size': 11})
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score, median_absolute_error
 
-# ==========================================
-# 1. ПІДГОТОВКА ДАНИХ
-# ==========================================
-# Формуємо таргет (за твоєю логікою)
-dataset["BALANCE"] = (dataset["AMOUNT_SAVINGS"].fillna(0) + 
-                      dataset["BALANCE_CURRENT_ACCOUNTS"].fillna(0) + 
-                      dataset["BALANCE_DEBIT_CARDS"].fillna(0) + 
-                      dataset["BALANCE_SALARY_CARDS"].fillna(0) + 
-                      dataset["BALANCE_SOCIAL_CARDS"].fillna(0))
-
-current_hard_threshold = 800000
+RANDOM_STATE = 42
+THRESHOLD = 50 # Бізнес-поріг. Суми менші за 50 грн вважаємо "пустими" рахунками
 
 # ==========================================
-# 2. МАТЕМАТИЧНІ РОЗРАХУНКИ
+# 1. ПРЕПРОЦЕСИНГ ТАРГЕТУ (Критично для Tweedie)
 # ==========================================
+# Відсікаємо від'ємні значення (овердрафти не є пасивами)
+y_clean = np.clip(y, a_min=0, a_max=None)
 
-# А. Аналіз існуючого сегмента HNWI (Overlap Analysis)
-hnwi_mask = dataset['SEGMENT'] == 'HNWI'
-hnwi_balances = dataset[hnwi_mask]['BALANCE']
+# Обнуляємо мікро-залишки, формуючи чіткий zero-inflated розподіл
+y_clean = np.where(y_clean < THRESHOLD, 0, y_clean)
 
-p10_hnwi = hnwi_balances.quantile(0.10)
-p25_hnwi = hnwi_balances.quantile(0.25)
-median_hnwi = hnwi_balances.median()
-
-# Б. Аналіз концентрації капіталу (Крива Лоренца / Парето)
-df_sorted = dataset[['BALANCE']].copy().sort_values('BALANCE').reset_index(drop=True)
-df_sorted['cum_clients'] = (df_sorted.index + 1) / len(df_sorted)
-df_sorted['cum_balance'] = df_sorted['BALANCE'].cumsum() / df_sorted['BALANCE'].sum()
-
-# Шукаємо пороги для топ-1%, 3%, 5% найбагатших
-targets = {
-    "Топ-1%": 0.99, 
-    "Топ-3%": 0.97, 
-    "Топ-5%": 0.95
-}
-concentration_metrics = {}
-
-for label, t in targets.items():
-    # Знаходимо першого клієнта, який перетинає цей перцентиль
-    idx = df_sorted[df_sorted['cum_clients'] >= t].index[0]
-    val = df_sorted.loc[idx, 'BALANCE']
-    # Рахуємо, скільки грошей у тих, хто вище цього порогу
-    money_share = 1 - df_sorted.loc[idx, 'cum_balance']
-    concentration_metrics[label] = {'threshold': val, 'wealth_share': money_share}
 
 # ==========================================
-# 3. ВІЗУАЛІЗАЦІЯ (Дашборд)
+# 2. БЕЗПЕЧНА СТРАТИФІКАЦІЯ
 # ==========================================
-fig = plt.figure(figsize=(22, 12))
-gs = fig.add_gridspec(2, 2)
+# Робимо кастомні біни, щоб гарантовано відокремити нулі від 'багатих'
+non_zero_y = y_clean[y_clean > 0]
+percentiles = list(np.percentile(non_zero_y, [25, 50, 75, 90]))
+bins = [-np.inf, 0] + percentiles + [np.inf]
 
-# --- Графік 1: Логарифмічний розподіл (Вгорі ліворуч) ---
-ax1 = fig.add_subplot(gs[0, 0])
-sns.histplot(np.log1p(dataset['BALANCE']), bins=60, kde=True, ax=ax1, color="royalblue")
-ax1.axvline(np.log1p(current_hard_threshold), color='red', linestyle='--', linewidth=2, label=f'Поточний (800k)')
-ax1.axvline(np.log1p(p25_hnwi), color='green', linestyle='-', linewidth=2, label=f'25-й перцентиль існ. HNWI')
-ax1.set_title('Логарифмічний розподіл BALANCE\n(пошук бімодальності)', fontsize=14, fontweight='bold')
-ax1.set_xlabel('log(BALANCE + 1)')
-ax1.legend()
+y_bins = pd.cut(y_clean, bins=bins, labels=False)
 
-# --- Графік 2: Перетин сегментів (Вгорі праворуч) ---
-ax2 = fig.add_subplot(gs[0, 1])
-sns.boxplot(data=dataset, x='SEGMENT', y='BALANCE', ax=ax2, order=['CONS', 'PREM', 'HNWI', 'EMPL'])
-ax2.set_yscale('log')
-ax2.axhline(current_hard_threshold, color='red', linestyle='--', linewidth=2, label='Поточний (800k)')
-ax2.axhline(p25_hnwi, color='green', linestyle='-', linewidth=2, label='Нижня межа ядра HNWI (25%)')
-ax2.set_title('Зв\'язок існуючих сегментів та реальних залишків', fontsize=14, fontweight='bold')
-ax2.set_ylabel('BALANCE (log scale)')
-ax2.legend()
 
-# --- Графік 3: Крива Лоренца (Внизу, на всю ширину) ---
-ax3 = fig.add_subplot(gs[1, :])
-ax3.plot(df_sorted['cum_clients'], df_sorted['cum_balance'], color='darkorange', linewidth=3, label='Крива Лоренца (Концентрація капіталу)')
-ax3.plot([0, 1], [0, 1], color='gray', linestyle='--', label='Лінія абсолютної рівності')
+# ==========================================
+# 3. SPLIT ТА ПІДГОТОВКА ФІЧЕЙ
+# ==========================================
+# ЗВЕРНИ УВАГУ: Передаємо y_clean (оригінальний масштаб), а не логарифм!
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y_clean, test_size=0.2, random_state=RANDOM_STATE, stratify=y_bins
+)
 
-# Додаємо точки наших цільових сегментів на криву
-for label, metrics in concentration_metrics.items():
-    t_val = targets[label]
-    cum_bal = df_sorted[df_sorted['cum_clients'] >= t_val]['cum_balance'].iloc[0]
-    ax3.plot(t_val, cum_bal, marker='o', markersize=8, color='red')
-    ax3.annotate(f"{label}\nПоріг: {metrics['threshold']:,.0f}\nЧастка грошей: {metrics['wealth_share']:.1%}", 
-                 xy=(t_val, cum_bal), xytext=(t_val - 0.1, cum_bal + 0.1),
-                 arrowprops=dict(facecolor='black', shrink=0.05, width=1, headwidth=5),
-                 fontsize=11, bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.9))
+X_train_final = X_train.copy()
+X_val_final = X_val.copy()
 
-ax3.set_title('Аналіз концентрації капіталу: Хто тримає гроші банку?', fontsize=14, fontweight='bold')
-ax3.set_xlabel('Кумулятивна частка клієнтів (від найбідніших до найбагатіших)')
-ax3.set_ylabel('Кумулятивна частка сумарного балансу')
-ax3.xaxis.set_major_formatter(ticker.PercentFormatter(1.0))
-ax3.yaxis.set_major_formatter(ticker.PercentFormatter(1.0))
-ax3.legend()
+cat_cols = [c for c in X_train_final.columns if X_train_final[c].dtype.name in ("object", "category")]
 
-plt.tight_layout()
+for c in cat_cols:
+    X_train_final[c] = X_train_final[c].astype("category")
+    X_val_final[c] = X_val_final[c].astype("category")
+
+
+# ==========================================
+# 4. TWEEDIE АРХІТЕКТУРА
+# ==========================================
+reg = lgb.LGBMRegressor(
+    objective="tweedie",
+    tweedie_variance_power=1.5, # Гіперпараметр p. 1.5 - класика для балансів.
+    n_estimators=5000,
+    learning_rate=0.03,
+    num_leaves=31,
+    min_child_samples=20,
+    subsample=0.8,
+    categorical_feature=cat_cols, # Вказуємо явно для уникнення ворнінгів
+    colsample_bytree=0.8,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+# Навчаємо на ОРИГІНАЛЬНИХ значеннях
+reg.fit(
+    X_train_final,
+    y_train,
+    eval_set=[(X_val_final, y_val)],
+    eval_metric="tweedie", # Функція втрат враховує дисперсію хвостів
+    callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=True)]
+)
+
+
+# ==========================================
+# 5. ОЦІНКА ТА АНАЛІЗ
+# ==========================================
+# Предикт повертає значення в оригінальному масштабі (вбудований exp під капотом)
+y_pred = reg.predict(X_val_final)
+
+# Оскільки Твіді може інколи видавати мікро-від'ємні предикати через наближення:
+y_pred = np.clip(y_pred, 0, None)
+
+# Для того, щоб адекватно ПОРІВНЯТИ метрики з твоєю минулою моделлю, 
+# ми тимчасово логарифмуємо результати суто для розрахунку R2 та побудови графіка
+y_val_log = np.log1p(y_val)
+y_pred_log = np.log1p(y_pred)
+
+mae_log = mean_absolute_error(y_val_log, y_pred_log)
+r2_log = r2_score(y_val_log, y_pred_log)
+medae_log = median_absolute_error(y_val_log, y_pred_log)
+
+mae_orig = mean_absolute_error(y_val, y_pred)
+medae_orig = median_absolute_error(y_val, y_pred)
+
+print("=" * 60)
+print("METRICS IN LOG-SPACE (for comparing with previous model)")
+print(f"MAE_log   : {mae_log:.5f}")
+print(f"MedAE_log : {medae_log:.5f}")
+print(f"R2_log    : {r2_log:.5f}")
+print("-" * 60)
+print("METRICS IN ORIGINAL SPACE")
+print(f"MAE_orig  : {mae_orig:,.2f}")
+print(f"MedAE_orig: {medae_orig:,.2f}")
+print("=" * 60)
+
+# Візуалізація
+plt.figure(figsize=(8, 6))
+plt.scatter(y_val_log, y_pred_log, alpha=0.3, s=10)
+mn, mx = float(np.min(y_val_log)), float(np.max(y_val_log))
+plt.plot([mn, mx], [mn, mx], "r--")
+plt.xlabel("True CURR_ACC (log1p)")
+plt.ylabel("Predicted CURR_ACC (log1p)")
+plt.title("Tweedie Regression: True vs Predicted (Visualized in log1p space)")
 plt.show()
-
-# ==========================================
-# 4. ТЕКСТОВИЙ ЗВІТ (Вивід в консоль)
-# ==========================================
-print("=" * 60)
-print(" АНАЛІТИЧНИЙ ЗВІТ: ОПТИМІЗАЦІЯ ПОРОГУ ДЛЯ СЕГМЕНТУ HNWI")
-print("=" * 60)
-print(f"Поточний жорсткий поріг: {current_hard_threshold:,.0f}")
-print("-" * 60)
-print("1. Аналіз на основі існуючої розмітки (Overlap із SEGMENT == 'HNWI'):")
-print(f"   - 10-й перцентиль існуючих HNWI: {p10_hnwi:,.0f} (відсікає 10% найнижчих балансів у сегменті)")
-print(f"   - 25-й перцентиль існуючих HNWI: {p25_hnwi:,.0f} (нижня межа 'ядра' сегменту)")
-print(f"   - Медіана існуючих HNWI:         {median_hnwi:,.0f}")
-print("-" * 60)
-print("2. Аналіз концентрації капіталу (Розподіл Парето):")
-for label, metrics in concentration_metrics.items():
-    print(f"   - {label} найбагатших клієнтів:")
-    print(f"       Поріг входу: {metrics['threshold']:,.0f}")
-    print(f"       Ця група генерує {metrics['wealth_share']:.1%} від усіх пасивів.")
-print("=" * 60)
