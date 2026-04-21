@@ -21,3 +21,5 @@ print(f"Оптимальний поріг класифікації: {best_thresh
 # Використовуємо знайдений поріг
 val_class_preds = (val_class_proba >= best_threshold).astype(int)
 y_pred_final = np.where(val_class_preds == 1, val_reg_preds, 0)
+
+python main.py --input input.csv --output company_results.csv --proxy-file proxies.txt
