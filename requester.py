@@ -1,11 +1,12 @@
+import io
 import logging
 import random
 from dataclasses import dataclass, field
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 from urllib.parse import urlsplit
 
-import requests
+import pycurl
 
 from proxy_manager import ProxyManager, ProxyRecord
 
@@ -38,6 +39,16 @@ CAPTCHA_MARKERS = (
     "cloudflare",
     "verify you are human",
 )
+
+
+class PyCurlRequestError(Exception):
+    pass
+
+
+@dataclass
+class CurlResponse:
+    status_code: int
+    text: str
 
 
 def proxy_label(proxy: Optional[ProxyRecord]) -> str:
@@ -113,11 +124,6 @@ class CompanyRequester:
             "DNT": "1",
         }
 
-    def _new_session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update(self._build_headers())
-        return session
-
     def _sleep_backoff(self, attempt: int) -> None:
         delay = (self.config.backoff_base_seconds ** attempt) + random.uniform(
             0,
@@ -126,27 +132,71 @@ class CompanyRequester:
         LOGGER.debug("Backoff %.1fs before retry", delay)
         time.sleep(delay)
 
-    def _response_looks_blocked(self, response: requests.Response) -> bool:
+    def _response_looks_blocked(self, response: CurlResponse) -> bool:
         if response.status_code in {403, 429}:
             return True
         text = response.text.lower()
         return any(marker in text for marker in CAPTCHA_MARKERS)
+
+    def _decode_body(self, body: bytes, content_type: Union[str, bytes]) -> str:
+        if isinstance(content_type, bytes):
+            content_type = content_type.decode("ascii", errors="ignore")
+        charset = "utf-8"
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.lower().startswith("charset="):
+                charset = part.split("=", 1)[1].strip()
+                break
+        try:
+            return body.decode(charset, errors="replace")
+        except LookupError:
+            return body.decode("utf-8", errors="replace")
+
+    def _perform_get(self, url: str, proxy: Optional[ProxyRecord]) -> CurlResponse:
+        buffer = io.BytesIO()
+        curl = pycurl.Curl()
+        headers = [f"{key}: {value}" for key, value in self._build_headers().items()]
+
+        try:
+            curl.setopt(pycurl.URL, url)
+            curl.setopt(pycurl.WRITEDATA, buffer)
+            curl.setopt(pycurl.HTTPHEADER, headers)
+            curl.setopt(pycurl.FOLLOWLOCATION, True)
+            curl.setopt(pycurl.MAXREDIRS, 10)
+            curl.setopt(pycurl.NOSIGNAL, 1)
+            curl.setopt(pycurl.ENCODING, "")
+            curl.setopt(pycurl.TIMEOUT_MS, int(self.config.timeout_seconds * 1000))
+            curl.setopt(pycurl.CONNECTTIMEOUT_MS, int(self.config.timeout_seconds * 1000))
+            if proxy:
+                curl.setopt(pycurl.PROXY, proxy.raw)
+
+            curl.perform()
+            status_code = curl.getinfo(pycurl.RESPONSE_CODE)
+            content_type = curl.getinfo(pycurl.CONTENT_TYPE) or ""
+            return CurlResponse(
+                status_code=status_code,
+                text=self._decode_body(buffer.getvalue(), content_type),
+            )
+        except pycurl.error as exc:
+            code = exc.args[0] if exc.args else "unknown"
+            message = exc.args[1] if len(exc.args) > 1 else str(exc)
+            raise PyCurlRequestError(f"pycurl error {code}: {message}") from exc
+        finally:
+            curl.close()
+
+    def _raise_for_status(self, response: CurlResponse) -> None:
+        if 400 <= response.status_code:
+            raise PyCurlRequestError(f"HTTP error {response.status_code}")
 
     def fetch_company_page(self, edrpou: str) -> Optional[str]:
         url = self.base_url.format(edrpou=edrpou)
 
         for attempt in range(1, self.config.max_attempts + 1):
             self.rate_limiter.wait()
-            session = self._new_session()
             proxy = self.proxy_manager.get_random_proxy()
-            proxy_map = proxy.requests_proxy if proxy else None
 
             try:
-                response = session.get(
-                    url,
-                    timeout=self.config.timeout_seconds,
-                    proxies=proxy_map,
-                )
+                response = self._perform_get(url, proxy)
                 LOGGER.info(
                     "HTTP %s for EDRPOU %s (attempt %s/%s, proxy %s)",
                     response.status_code,
@@ -179,12 +229,12 @@ class CompanyRequester:
                     self._sleep_backoff(attempt)
                     continue
 
-                response.raise_for_status()
+                self._raise_for_status(response)
                 if proxy:
                     self.proxy_manager.mark_success(proxy)
                 return response.text
 
-            except requests.RequestException as exc:
+            except PyCurlRequestError as exc:
                 if proxy:
                     self.proxy_manager.mark_failure(proxy)
                 LOGGER.warning(
@@ -196,8 +246,6 @@ class CompanyRequester:
                     exc,
                 )
                 self._sleep_backoff(attempt)
-            finally:
-                session.close()
 
         LOGGER.error(
             "Request exhausted for EDRPOU %s after %s attempts",

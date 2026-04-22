@@ -1,7 +1,7 @@
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Iterable, List, Optional
 
 
 @dataclass
@@ -10,13 +10,6 @@ class ProxyRecord:
     failures: int = 0
     successes: int = 0
     disabled: bool = False
-
-    @property
-    def requests_proxy(self) -> Dict[str, str]:
-        return {
-            "http": self.raw,
-            "https": self.raw,
-        }
 
 
 @dataclass
