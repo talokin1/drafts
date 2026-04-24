@@ -1,39 +1,39 @@
-import pandas as pd
-import numpy as np
-import gc
+# --- 8. АГРЕГОВАНІ ПОКАЗНИКИ (Для звітності) ---
 
-files = [
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2025_10.parquet',
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2025_11.parquet',
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2025_12.parquet',
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2026_01.parquet',
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2026_02.parquet',
-    r'M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw\data_trxs_2026_03.parquet'
-]
+# 1. Показники по клієнтах
+total_clients_count = len(clients_ids)
+wo_taxes_clients_count = len(final_export_df)
 
-chunk_list = []
+# Розрахунок частки (Share = Part / Total)
+wo_taxes_clients_share = wo_taxes_clients_count / total_clients_count
 
-for file in files:
-    print(f"Обробка файлу: {file.split('Raw')[-1]}...")
-    
-    temp_df = pd.read_parquet(file)
-    
-    temp_df = temp_df[temp_df["BANKBID"].astype(str).str.startswith("8")]
-    
-    temp_df["CONTRAGENTAIDENTIFYCODE"] = temp_df["CONTRAGENTAIDENTIFYCODE"].astype(str)
-    temp_df["CONTRAGENTBIDENTIFYCODE"] = temp_df["CONTRAGENTBIDENTIFYCODE"].astype(str)
-    
-    temp_df = temp_df[
-        temp_df["CONTRAGENTAIDENTIFYCODE"].isin(clients_ids) | 
-        temp_df["CONTRAGENTBIDENTIFYCODE"].isin(clients_ids)
-    ]
-    
-    chunk_list.append(temp_df)
-    
-    del temp_df
-    gc.collect()
+# 2. Показники по "відомостях" (транзакціях / записах)
+# Загальна кількість транзакцій наших клієнтів за півроку
+total_trx_count = len(client_trx)
 
-print("Конкатенація результатів...")
-client_trx = pd.concat(chunk_list, ignore_index=True)
+# Кількість транзакцій, які Є податками (ПДФО, ЄСВ, ВЗ)
+tax_trx_count = len(tax_transactions)
 
-print(f"Готово! Загальна кількість транзакцій за півроку: {len(client_trx)}")
+# Розрахунок частки податкових відомостей у загальному пулі
+tax_trx_share = tax_trx_count / total_trx_count if total_trx_count > 0 else 0
+
+# 3. Розподіл клієнтів без податків за їхнім бізнес-сегментом
+segment_agg = final_export_df.groupby('Сегмент клієнта').size().reset_index(name='Кількість')
+segment_agg['Частка, %'] = (segment_agg['Кількість'] / wo_taxes_clients_count * 100).round(2)
+
+
+# --- ВИВІД РЕЗУЛЬТАТІВ ---
+
+print("=== 2. Агреговані показники ===")
+print(f"Загальна база клієнтів (унікальних ЄДРПОУ): {total_clients_count}")
+print("-" * 40)
+print(f"Кількість клієнтів без податків: {wo_taxes_clients_count}")
+print(f"Частка таких клієнтів:           {wo_taxes_clients_share:.1%} ({wo_taxes_clients_share * 100:.2f}%)")
+print("-" * 40)
+print(f"Загальна кількість транзакцій клієнтів: {total_trx_count}")
+print(f"Кількість податкових відомостей:        {tax_trx_count}")
+print(f"Частка податкових відомостей:           {tax_trx_share:.1%} ({tax_trx_share * 100:.2f}%)")
+print("=" * 40)
+
+print("\nДеталізація цільових клієнтів за сегментами:")
+display(segment_agg)
