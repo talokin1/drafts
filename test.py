@@ -1,39 +1,38 @@
-# --- 8. АГРЕГОВАНІ ПОКАЗНИКИ (Для звітності) ---
+# --- РОЗРАХУНОК АГРЕГОВАНИХ ПОКАЗНИКІВ (Пункт 2 з ТЗ) ---
 
 # 1. Показники по клієнтах
-total_clients_count = len(clients_ids)
-wo_taxes_clients_count = len(final_export_df)
+total_clients = len(clients_ids)                       # Всі клієнти з файлів df1 та df2
+wo_taxes_clients_count = len(final_export_df)          # Ті самі 601 клієнт
 
-# Розрахунок частки (Share = Part / Total)
-wo_taxes_clients_share = wo_taxes_clients_count / total_clients_count
-
-# 2. Показники по "відомостях" (транзакціях / записах)
-# Загальна кількість транзакцій наших клієнтів за півроку
-total_trx_count = len(client_trx)
-
-# Кількість транзакцій, які Є податками (ПДФО, ЄСВ, ВЗ)
-tax_trx_count = len(tax_transactions)
-
-# Розрахунок частки податкових відомостей у загальному пулі
-tax_trx_share = tax_trx_count / total_trx_count if total_trx_count > 0 else 0
-
-# 3. Розподіл клієнтів без податків за їхнім бізнес-сегментом
-segment_agg = final_export_df.groupby('Сегмент клієнта').size().reset_index(name='Кількість')
-segment_agg['Частка, %'] = (segment_agg['Кількість'] / wo_taxes_clients_count * 100).round(2)
+# Розрахунок частки
+wo_taxes_clients_share = wo_taxes_clients_count / total_clients if total_clients > 0 else 0
 
 
-# --- ВИВІД РЕЗУЛЬТАТІВ ---
+# 2. Розподіл цих клієнтів за сегментами
+# Групуємо відфільтрованих клієнтів (final_export_df) по колонці 'Сегмент клієнта'
+segment_breakdown = final_export_df.groupby('Сегмент клієнта').size().reset_index(name='Кількість клієнтів')
+segment_breakdown['Частка в сегменті, %'] = (segment_breakdown['Кількість клієнтів'] / wo_taxes_clients_count * 100).round(2)
+
+
+# 3. Показники по "відповідних відомостях" (транзакціях)
+total_trx = len(client_trx)                            # Всі транзакції клієнтів за період
+tax_trx_count = len(tax_transactions)                  # Транзакції, що класифіковані як ПДФО, ЄСВ або ВЗ
+
+# Розрахунок частки податкових транзакцій
+tax_trx_share = tax_trx_count / total_trx if total_trx > 0 else 0
+
+
+# --- ВИВІД ДЛЯ ВІДПРАВКИ КОЛЕГАМ ---
 
 print("=== 2. Агреговані показники ===")
-print(f"Загальна база клієнтів (унікальних ЄДРПОУ): {total_clients_count}")
-print("-" * 40)
-print(f"Кількість клієнтів без податків: {wo_taxes_clients_count}")
-print(f"Частка таких клієнтів:           {wo_taxes_clients_share:.1%} ({wo_taxes_clients_share * 100:.2f}%)")
-print("-" * 40)
-print(f"Загальна кількість транзакцій клієнтів: {total_trx_count}")
-print(f"Кількість податкових відомостей:        {tax_trx_count}")
-print(f"Частка податкових відомостей:           {tax_trx_share:.1%} ({tax_trx_share * 100:.2f}%)")
-print("=" * 40)
+print(f"Загальна кількість досліджуваних клієнтів: {total_clients}")
+print(f"Кількість клієнтів, що НЕ платять податки: {wo_taxes_clients_count}")
+print(f"Частка таких клієнтів: {wo_taxes_clients_share:.1%} ({wo_taxes_clients_share * 100:.2f}%)\n")
 
-print("\nДеталізація цільових клієнтів за сегментами:")
-display(segment_agg)
+print("Розподіл цих клієнтів за сегментами:")
+display(segment_breakdown)
+
+print("\n--- Аналітика по відомостях (транзакціях) ---")
+print(f"Загальна кількість знайдених транзакцій за період: {total_trx}")
+print(f"Кількість відповідних відомостей (сплата податків): {tax_trx_count}")
+print(f"Частка податкових відомостей: {tax_trx_share:.1%} ({tax_trx_share * 100:.2f}%)")
