@@ -1,13 +1,43 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
 
-# 1. Візуальний пошук (дивимося тільки на суми до 50 000)
-plt.figure(figsize=(10, 6))
-# Беремо тільки тих, у кого < 50k, і розбиваємо на 100 кошиків
-sns.histplot(df[df["CURR_ACC"] < 50000]["CURR_ACC"], bins=100)
-plt.title("Розподіл залишків до 50 000")
-plt.show()
+# Відфільтруємо рядки, де немає NaN значень, щоб метрики не впали з помилкою
+df_clean = df.dropna(subset=['INCOME_LIABILITIES', 'LIABILITIES_POTENTIAL']).copy()
 
-# 2. Математичний пошук (квантилі)
-# Це покаже, який відсоток людей має суму нижче певного значення
-print(df["CURR_ACC"].describe(percentiles=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]))
+def get_regression_metrics(y_true, y_pred, name="Overall"):
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    mape = mean_absolute_percentage_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+    
+    return {
+        "Segment": name,
+        "Samples_Count": len(y_true),
+        "MAE": mae,
+        "RMSE": rmse,
+        "MAPE (%)": mape * 100, # Переводимо у відсотки для зручності
+        "R2": r2
+    }
+
+results = []
+
+# 1. Рахуємо загальні метрики по всьому датасету
+results.append(get_regression_metrics(
+    df_clean['INCOME_LIABILITIES'], 
+    df_clean['LIABILITIES_POTENTIAL'], 
+    "УСІ ДАНІ (Overall)"
+))
+
+# 2. Рахуємо метрики окремо для кожного сегменту бізнесу (MICRO, SMALL, LARGE)
+for firm_type in df_clean['FIRM_TYPE'].unique():
+    subset = df_clean[df_clean['FIRM_TYPE'] == firm_type]
+    results.append(get_regression_metrics(
+        subset['INCOME_LIABILITIES'], 
+        subset['LIABILITIES_POTENTIAL'], 
+        f"Сегмент: {firm_type}"
+    ))
+
+# Виводимо результати у вигляді красивого датафрейму
+metrics_df = pd.DataFrame(results)
+print(metrics_df.to_string(index=False))
