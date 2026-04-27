@@ -1,43 +1,44 @@
-import pandas as pd
+from sklearn.metrics import precision_recall_curve
+import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, mean_absolute_percentage_error
+import seaborn as sns
 
-# Відфільтруємо рядки, де немає NaN значень, щоб метрики не впали з помилкою
-df_clean = df.dropna(subset=['INCOME_LIABILITIES', 'LIABILITIES_POTENTIAL']).copy()
+# 1. Рахуємо значення P, R та пороги
+precisions, recalls, thresholds = precision_recall_curve(y_val_clf, val_class_proba)
 
-def get_regression_metrics(y_true, y_pred, name="Overall"):
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    mape = mean_absolute_percentage_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    
-    return {
-        "Segment": name,
-        "Samples_Count": len(y_true),
-        "MAE": mae,
-        "RMSE": rmse,
-        "MAPE (%)": mape * 100, # Переводимо у відсотки для зручності
-        "R2": r2
-    }
+# Масив thresholds на 1 елемент коротший за precisions/recalls, 
+# тому відкидаємо останній елемент для побудови графіків
+precisions = precisions[:-1]
+recalls = recalls[:-1]
 
-results = []
+# 2. Рахуємо F1-score для кожного порогу (щоб знайти математичний баланс)
+# Додаємо eps, щоб уникнути ділення на нуль
+f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
+best_f1_idx = np.argmax(f1_scores)
+best_f1_threshold = thresholds[best_f1_idx]
 
-# 1. Рахуємо загальні метрики по всьому датасету
-results.append(get_regression_metrics(
-    df_clean['INCOME_LIABILITIES'], 
-    df_clean['LIABILITIES_POTENTIAL'], 
-    "УСІ ДАНІ (Overall)"
-))
+# 3. Будуємо графік
+sns.set_theme(style="whitegrid")
+plt.figure(figsize=(12, 6))
 
-# 2. Рахуємо метрики окремо для кожного сегменту бізнесу (MICRO, SMALL, LARGE)
-for firm_type in df_clean['FIRM_TYPE'].unique():
-    subset = df_clean[df_clean['FIRM_TYPE'] == firm_type]
-    results.append(get_regression_metrics(
-        subset['INCOME_LIABILITIES'], 
-        subset['LIABILITIES_POTENTIAL'], 
-        f"Сегмент: {firm_type}"
-    ))
+# Лінія Precision
+plt.plot(thresholds, precisions, label='Precision (Точність)', color='blue', linewidth=2)
+# Лінія Recall
+plt.plot(thresholds, recalls, label='Recall (Повнота)', color='green', linewidth=2)
+# Лінія F1
+plt.plot(thresholds, f1_scores, label='F1 Score (Баланс)', color='purple', linestyle='--', alpha=0.7)
 
-# Виводимо результати у вигляді красивого датафрейму
-metrics_df = pd.DataFrame(results)
-print(metrics_df.to_string(index=False))
+# Позначаємо поточний поріг (0.467)
+plt.axvline(x=0.467, color='red', linestyle=':', label='Твій поточний поріг (0.467)')
+
+# Позначаємо найкращий поріг по F1
+plt.axvline(x=best_f1_threshold, color='purple', linestyle=':', 
+            label=f'Макс. F1 поріг ({best_f1_threshold:.3f})')
+
+plt.title('Precision-Recall Trade-off vs Classification Threshold')
+plt.xlabel('Classification Threshold')
+plt.ylabel('Score')
+plt.legend(loc='lower left')
+plt.xlim([0, 1])
+plt.ylim([0, 1.05])
+plt.show()
