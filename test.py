@@ -315,25 +315,14 @@ bucket_model.fit(
     ]
 )
 
+train_proba = bucket_model.predict_proba(X_train)
+val_proba = bucket_model.predict_proba(X_val)
 
+train_bucket_pred = np.argmax(train_proba, axis=1)
+val_bucket_pred = np.argmax(val_proba, axis=1)
 
-
-print("Training Bucket Expected Value Model...")
-
-bucket_model.fit(
-    X_train,
-    y_train_bucket,
-    sample_weight=sample_weight,
-    eval_set=[(X_val, y_val_bucket)],
-    eval_metric="multi_logloss",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=150, verbose=False),
-        lgb.log_evaluation(period=100)
-    ]
-)
-
-
+train_expected_raw = expected_value_from_proba(train_proba, bucket_values)
+val_expected_raw = expected_value_from_proba(val_proba, bucket_values)
 
 
 
