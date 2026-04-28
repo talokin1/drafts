@@ -1,3 +1,119 @@
+RANDOM_STATE = 42
+
+ID_COL = "IDENTIFYCODE"
+SEGMENT_COL = "FIRM_TYPE"
+
+ACTIVE_THRESHOLD = 1000
+CLASSIFICATION_THRESHOLD = 0.5
+
+N_DECILES = 10
+
+GAMMA = 3.0
+ZERO_THRESHOLD = 0.45
+
+CALIBRATION_FACTOR_MIN = 0.25
+CALIBRATION_FACTOR_MAX = 3.0
+
+SEGMENT_BUCKET_FACTOR_MIN = 0.05
+SEGMENT_BUCKET_FACTOR_MAX = 2.0
+
+MIN_GROUP_SIZE_FOR_CALIBRATION = 50
+MIN_GROUP_SIZE_FOR_SEGMENT_BUCKET = 50
+
+CAP_QUANTILE_BY_SEGMENT = 0.99
+
+
+def prepare_categorical_train_valid(X_train, X_val):
+    X_train = X_train.copy()
+    X_val = X_val.copy()
+
+    cat_cols = [
+        c for c in X_train.columns
+        if X_train[c].dtype.name in ("object", "category")
+    ]
+
+    cat_values = {}
+
+    for c in cat_cols:
+        categories = (
+            pd.Series(X_train[c].astype("object"))
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+        cat_values[c] = categories
+
+        X_train[c] = pd.Categorical(X_train[c], categories=categories)
+        X_val[c] = pd.Categorical(X_val[c], categories=categories)
+
+    return X_train, X_val, cat_cols, cat_values
+
+
+def make_qcut_bins(values, n_bins=10):
+    values = pd.Series(values).clip(lower=0)
+
+    try:
+        bucket, bin_edges = pd.qcut(
+            values,
+            q=n_bins,
+            labels=False,
+            retbins=True,
+            duplicates="drop"
+        )
+
+        bin_edges = np.unique(bin_edges)
+
+        if len(bin_edges) < 2:
+            bin_edges = np.array([0, values.max() + 1])
+
+        bucket = pd.cut(
+            values,
+            bins=bin_edges,
+            labels=False,
+            include_lowest=True
+        )
+
+        bucket = pd.Series(bucket).fillna(0).astype(int)
+
+        return bucket.values, bin_edges
+
+    except Exception:
+        bin_edges = np.array([0, values.max() + 1])
+        bucket = np.zeros(len(values), dtype=int)
+        return bucket, bin_edges
+
+
+def apply_fixed_bins(values, bin_edges):
+    values = pd.Series(values).clip(lower=0)
+
+    bucket = pd.cut(
+        values,
+        bins=bin_edges,
+        labels=False,
+        include_lowest=True
+    )
+
+    bucket = pd.Series(bucket).fillna(0).astype(int)
+
+    return bucket.values
+
+
+def safe_ratio(num, den, default=np.nan):
+    if den is None or den == 0 or pd.isna(den):
+        return default
+    return num / den
+
+
+
+
+
+
+
+
+
+
+
 mask_train_reg = (y_train_raw > ACTIVE_THRESHOLD).values
 mask_val_reg = (y_val_raw > ACTIVE_THRESHOLD).values
 
