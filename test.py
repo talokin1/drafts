@@ -339,6 +339,27 @@ def apply_calibration(
     return pred_calibrated, tmp["factor"].values, tmp["pred_decile"].values
 
 
+train_expected_calibrated, train_calibration_factor = apply_calibration(
+    X_train,
+    train_expected_raw,
+    calibration_table,
+    segment_calibration_table,
+    global_calibration_factor,
+    segment_col=SEGMENT_COL,
+    n_deciles=N_DECILES
+)
+
+val_expected_calibrated, val_calibration_factor = apply_calibration(
+    X_val,
+    val_expected_raw,
+    calibration_table,
+    segment_calibration_table,
+    global_calibration_factor,
+    segment_col=SEGMENT_COL,
+    n_deciles=N_DECILES
+)
+
+
 calibration_table, segment_calibration_table, global_calibration_factor, pred_decile_edges = (
     build_calibration_table(
         X_val=X_val,
