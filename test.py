@@ -1,35 +1,51 @@
-print("Навчання Stage 2: Regressor...")
-q = y_train_raw.quantile(0.97)
+import pandas as pd
+import os
 
-mask_train_reg = (
-    (y_train_raw >= THRESHOLD) & 
-    (y_train_raw > 0.5) & 
-    (y_train_raw < q)
-).values
+income_months = [
+    '2025_04','2025_05','2025_06','2025_07','2025_08',
+    '2025_09','2025_10','2025_11','2025_12',
+    '2026_01','2026_02'
+]
 
-X_train_reg = X_train[mask_train_reg].copy()
-y_train_reg_log = np.log1p(y_train_raw[mask_train_reg]) # Або без логарифма, якщо перейшов на MAE
+base_path = r"M:\Controlling\Data_Science_Projects\Income_Data"
 
+target_contragent_id = 3044909  # <-- підстав свого клієнта
 
+results = []
 
-mask_val_reg = (
-    (y_val_raw >= THRESHOLD) & 
-    (y_val_raw > 0.5) & 
-    (y_val_raw < q)
-).values
+for month in income_months:
+    file_path = os.path.join(
+        base_path,
+        f"income_wide_corporate_clients_{month}.csv"
+    )
+    
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        continue
 
-X_val_reg = X_val[mask_val_reg].copy()
-y_val_reg_log = np.log1p(y_val_raw[mask_val_reg])
+    df = pd.read_csv(file_path)
 
-reg = lgb.LGBMRegressor(
-    objective="regression", 
-    n_estimators=5000,
-    learning_rate=0.03,
-    num_leaves=31,
-    min_child_samples=20,
-    subsample=0.8,
-    categorical_feature=cat_cols,
-    colsample_bytree=0.8,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
+    # фільтр клієнта
+    client_row = df[df['CONTRAGENTID'] == target_contragent_id]
+
+    if client_row.empty:
+        income = 0
+    else:
+        # якщо раптом декілька рядків — беремо суму
+        income = client_row['MONTHLY_INCOME'].sum()
+
+    results.append({
+        'month': month,
+        'income': income
+    })
+
+# фінальний датафрейм
+result_df = pd.DataFrame(results)
+
+# сумарний інком
+total_income = result_df['income'].sum()
+
+result_df['cumulative_income'] = result_df['income'].cumsum()
+
+print(result_df)
+print(f"\nTOTAL INCOME: {total_income}")
