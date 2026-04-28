@@ -67,6 +67,27 @@ print("\nActive distribution:")
 print(y_binary.value_counts())
 print(y_binary.value_counts(normalize=True))
 
+X_train, X_val, y_train_raw, y_val_raw = train_test_split(
+    df_model,
+    y_clean,
+    test_size=0.2,
+    random_state=RANDOM_STATE,
+    stratify=y_binary
+)
+
+y_train_clf = (y_train_raw > ACTIVE_THRESHOLD).astype(int)
+y_val_clf = (y_val_raw > ACTIVE_THRESHOLD).astype(int)
+
+X_train, X_val, cat_cols, cat_values = prepare_categorical_train_valid(
+    X_train,
+    X_val
+)
+
+feature_cols = X_train.columns.tolist()
+
+print("X_train:", X_train.shape)
+print("X_val:", X_val.shape)
+print("cat_cols:", cat_cols)
 
 
 
