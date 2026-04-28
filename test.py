@@ -689,6 +689,17 @@ plt.show()
 
 plt.figure(figsize=(10, 6))
 
+
+cm = confusion_matrix(y_val_bucket, val_bucket_pred)
+
+cm_df = pd.DataFrame(
+    cm,
+    index=[f"true_{label}" for label in BUCKET_LABELS],
+    columns=[f"pred_{label}" for label in BUCKET_LABELS]
+)
+
+cm_df
+
 sns.heatmap(
     cm_df,
     annot=False,
