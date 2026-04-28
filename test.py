@@ -202,7 +202,20 @@ reg_sample_weight = build_segment_weights(X_train_reg)
 reg_sample_weight = reg_sample_weight * (
     1.0 + np.log1p(y_train_reg_raw) / np.log1p(y_train_reg_raw).max()
 )
-
+reg = lgb.LGBMRegressor(
+    objective="huber",
+    n_estimators=4000,
+    learning_rate=0.03,
+    num_leaves=31,
+    max_depth=-1,
+    min_child_samples=30,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.3,
+    reg_lambda=1.0,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
 
 print("Training Stage 2: regressor...")
 
