@@ -1,3 +1,91 @@
+mask_train_reg = (y_train_raw > ACTIVE_THRESHOLD).values
+mask_val_reg = (y_val_raw > ACTIVE_THRESHOLD).values
+
+X_train_reg = X_train.loc[mask_train_reg].copy()
+X_val_reg = X_val.loc[mask_val_reg].copy()
+
+y_train_reg_raw = y_train_raw.loc[mask_train_reg].copy()
+y_val_reg_raw = y_val_raw.loc[mask_val_reg].copy()
+
+y_train_reg_log = np.log1p(y_train_reg_raw)
+y_val_reg_log = np.log1p(y_val_reg_raw)
+
+print("Regression train:", X_train_reg.shape)
+print("Regression val:", X_val_reg.shape)
+print(y_train_reg_raw.describe())
+
+reg_sample_weight = build_segment_weights(X_train_reg)
+
+reg_sample_weight = reg_sample_weight * (
+    1.0 + np.log1p(y_train_reg_raw) / np.log1p(y_train_reg_raw).max()
+)
+
+reg = lgb.LGBMRegressor(
+    objective="huber",
+    n_estimators=4000,
+    learning_rate=0.03,
+    num_leaves=31,
+    max_depth=-1,
+    min_child_samples=30,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.3,
+    reg_lambda=1.0,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+
+print("Training Stage 2: regressor...")
+
+reg.fit(
+    X_train_reg,
+    y_train_reg_log,
+    sample_weight=reg_sample_weight,
+    eval_set=[(X_val_reg, y_val_reg_log)],
+    eval_metric="mae",
+    categorical_feature=cat_cols,
+    callbacks=[
+        lgb.early_stopping(stopping_rounds=200, verbose=False),
+        lgb.log_evaluation(period=100)
+    ]
+)
+train_reg_pred_log = reg.predict(X_train_reg)
+train_residuals = y_train_reg_log - train_reg_pred_log
+
+sigma = np.std(train_residuals)
+bias_correction = np.exp(0.5 * sigma**2)
+
+print("sigma:", sigma)
+print("bias_correction:", bias_correction)
+
+
+
+
+
+
+train_income_if_active_log = reg.predict(X_train)
+val_income_if_active_log = reg.predict(X_val)
+
+train_income_if_active = np.expm1(train_income_if_active_log) * bias_correction
+val_income_if_active = np.expm1(val_income_if_active_log) * bias_correction
+
+train_income_if_active = np.clip(train_income_if_active, 0, None)
+val_income_if_active = np.clip(val_income_if_active, 0, None)
+
+
+train_expected_raw = (train_p_active ** GAMMA) * train_income_if_active
+val_expected_raw = (val_p_active ** GAMMA) * val_income_if_active
+
+train_expected_raw[train_p_active < ZERO_THRESHOLD] = 0
+val_expected_raw[val_p_active < ZERO_THRESHOLD] = 0
+
+train_expected_raw = np.clip(train_expected_raw, 0, None)
+val_expected_raw = np.clip(val_expected_raw, 0, None)
+
+
+
+
 def build_calibration_table(
     X_val,
     y_val_true,
