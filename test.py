@@ -97,20 +97,24 @@ print("\nActive rate:")
 print(y_active.value_counts(normalize=True))
 print(y_active.value_counts())
 
+X_train, X_val, y_train_raw, y_val_raw = train_test_split(
+    df_model,
+    y_clean,
+    test_size=0.2,
+    random_state=RANDOM_STATE,
+    stratify=y_active
+)
 
-df_model = X.copy()
-y_clean = pd.Series(y, index=X.index).clip(lower=0)
+y_train_active = (y_train_raw > ACTIVE_THRESHOLD).astype(int)
+y_val_active = (y_val_raw > ACTIVE_THRESHOLD).astype(int)
 
-# active target
-y_active = (y_clean > ACTIVE_THRESHOLD).astype(int)
+X_train, X_val, cat_cols, cat_values = prepare_categorical_train_valid(X_train, X_val)
 
-print("Target distribution:")
-print(y_clean.describe())
+feature_cols = X_train.columns.tolist()
 
-print("\nActive rate:")
-print(y_active.value_counts(normalize=True))
-print(y_active.value_counts())
-
+print("Train shape:", X_train.shape)
+print("Val shape:", X_val.shape)
+print("Categorical columns:", cat_cols)
 
 def build_segment_weights(X_part, default_weight=1.0):
     weights = pd.Series(default_weight, index=X_part.index, dtype=float)
