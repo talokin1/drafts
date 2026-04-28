@@ -180,20 +180,21 @@ clf.fit(
     ]
 )
 
-print("Training Stage 1: Activity Classifier...")
+val_p_active = clf.predict_proba(X_val)[:, 1]
+train_p_active = clf.predict_proba(X_train)[:, 1]
 
-clf.fit(
-    X_train,
-    y_train_active,
-    sample_weight=clf_sample_weight,
-    eval_set=[(X_val, y_val_active)],
-    eval_metric="auc",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=150, verbose=False),
-        lgb.log_evaluation(period=100)
-    ]
-)
+val_active_pred_class = (val_p_active >= CLASSIFICATION_THRESHOLD).astype(int)
+
+print("=" * 80)
+print("[Stage 1: Classifier]")
+print("Train ROC-AUC:", roc_auc_score(y_train_active, train_p_active))
+print("Val ROC-AUC  :", roc_auc_score(y_val_active, val_p_active))
+print("Val PR-AUC   :", average_precision_score(y_val_active, val_p_active))
+print("-" * 80)
+print(classification_report(y_val_active, val_active_pred_class))
+print("Confusion matrix:")
+print(confusion_matrix(y_val_active, val_active_pred_class))
+print("=" * 80)
 
 
 
@@ -253,7 +254,7 @@ reg.fit(
     ]
 )
 
-raw_expected = p_active * income_if_active
+# raw_expected = p_active * income_if_active
 train_income_if_active_log = reg.predict(X_train)
 val_income_if_active_log = reg.predict(X_val)
 
