@@ -1,3 +1,179 @@
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    classification_report,
+    confusion_matrix,
+    mean_absolute_error,
+    median_absolute_error,
+    r2_score
+)
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+RANDOM_STATE = 42
+
+ID_COL = "IDENTIFYCODE"
+SEGMENT_COL = "FIRM_TYPE"
+
+ACTIVE_THRESHOLD = 1000
+CLASSIFICATION_THRESHOLD = 0.5
+
+N_DECILES = 10
+
+GAMMA = 3.0
+ZERO_THRESHOLD = 0.45
+
+CALIBRATION_FACTOR_MIN = 0.25
+CALIBRATION_FACTOR_MAX = 3.0
+
+SEGMENT_BUCKET_FACTOR_MIN = 0.05
+SEGMENT_BUCKET_FACTOR_MAX = 2.0
+
+MIN_GROUP_SIZE_FOR_CALIBRATION = 50
+MIN_GROUP_SIZE_FOR_SEGMENT_BUCKET = 50
+
+CAP_QUANTILE_BY_SEGMENT = 0.99
+
+
+
+
+df_model = X.copy()
+y_clean = pd.Series(y, index=X.index).clip(lower=0)
+
+y_binary = (y_clean > ACTIVE_THRESHOLD).astype(int)
+
+print("Target describe:")
+print(y_clean.describe())
+
+print("\nActive distribution:")
+print(y_binary.value_counts())
+print(y_binary.value_counts(normalize=True))
+
+df_model = X.copy()
+y_clean = pd.Series(y, index=X.index).clip(lower=0)
+
+y_binary = (y_clean > ACTIVE_THRESHOLD).astype(int)
+
+print("Target describe:")
+print(y_clean.describe())
+
+print("\nActive distribution:")
+print(y_binary.value_counts())
+print(y_binary.value_counts(normalize=True))
+
+
+
+
+
+
+
+
+
+
+def build_segment_weights(X_part):
+    weights = pd.Series(1.0, index=X_part.index, dtype=float)
+
+    if SEGMENT_COL in X_part.columns:
+        seg = X_part[SEGMENT_COL].astype(str)
+
+        weights.loc[seg.eq("MICRO")] = 1.0
+        weights.loc[seg.eq("SMALL")] = 1.2
+        weights.loc[seg.eq("MEDIUM")] = 1.5
+        weights.loc[seg.eq("LARGE")] = 2.5
+
+    return weights
+
+
+clf_sample_weight = build_segment_weights(X_train)
+
+pos_rate = y_train_clf.mean()
+neg_rate = 1 - pos_rate
+
+if pos_rate > 0:
+    pos_multiplier = neg_rate / pos_rate
+else:
+    pos_multiplier = 1.0
+
+clf_sample_weight = clf_sample_weight * np.where(
+    y_train_clf == 1,
+    pos_multiplier,
+    1.0
+)
+
+print("Positive multiplier:", pos_multiplier)
+
+clf = lgb.LGBMClassifier(
+    objective="binary",
+    n_estimators=3000,
+    learning_rate=0.03,
+    num_leaves=31,
+    max_depth=-1,
+    min_child_samples=30,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.3,
+    reg_lambda=1.0,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+print("Training Stage 1: classifier...")
+
+clf.fit(
+    X_train,
+    y_train_clf,
+    sample_weight=clf_sample_weight,
+    eval_set=[(X_val, y_val_clf)],
+    eval_metric="auc",
+    categorical_feature=cat_cols,
+    callbacks=[
+        lgb.early_stopping(stopping_rounds=150, verbose=False),
+        lgb.log_evaluation(period=100)
+    ]
+)
+
+train_p_active = clf.predict_proba(X_train)[:, 1]
+val_p_active = clf.predict_proba(X_val)[:, 1]
+
+val_class_pred = (val_p_active >= CLASSIFICATION_THRESHOLD).astype(int)
+
+print("=" * 80)
+print("[Stage 1: Classifier]")
+print(f"ROC-AUC Train: {roc_auc_score(y_train_clf, train_p_active):.4f}")
+print(f"ROC-AUC Val  : {roc_auc_score(y_val_clf, val_p_active):.4f}")
+print(f"PR-AUC Val   : {average_precision_score(y_val_clf, val_p_active):.4f}")
+print("-" * 80)
+print(classification_report(y_val_clf, val_class_pred))
+print(confusion_matrix(y_val_clf, val_class_pred))
+print("=" * 80)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 mask_train_reg = (y_train_raw > ACTIVE_THRESHOLD).values
 mask_val_reg = (y_val_raw > ACTIVE_THRESHOLD).values
 
