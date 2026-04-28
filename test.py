@@ -1,18 +1,26 @@
-ZERO_THRESHOLD = 1.0
+bucket_dist = pd.DataFrame({
+    "bucket_id": y_train_bucket,
+    "bucket_name": [BUCKET_LABELS[i] for i in y_train_bucket]
+})
 
-BUCKET_LABELS = [
-    "zero",
-    "1-100",
-    "100-500",
-    "500-1.5k",
-    "1.5k-5k",
-    "5k-15k",
-    "15k-50k",
-    "50k-150k",
-    "150k+"
-]
+display(
+    bucket_dist["bucket_name"]
+    .value_counts()
+    .reindex(BUCKET_LABELS)
+    .to_frame("count")
+    .assign(share=lambda d: d["count"] / d["count"].sum())
+)
 
-N_BUCKETS = len(BUCKET_LABELS)
+
+
+
+
+
+
+
+
+
+
 
 
 def make_target_buckets(y):
