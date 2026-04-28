@@ -645,6 +645,38 @@ validation_results["Income_If_Active"] = validation_results["Income_If_Active"].
 
 validation_results.head(20)
 
+
+
+
+
+
+
+
+
+def group_diagnostics(df, group_cols):
+    out = (
+        df.groupby(group_cols)
+        .agg(
+            n=("True_Value", "size"),
+            true_sum=("True_Value", "sum"),
+            pred_sum=("Predicted", "sum"),
+            true_mean=("True_Value", "mean"),
+            pred_mean=("Predicted", "mean"),
+            true_median=("True_Value", "median"),
+            pred_median=("Predicted", "median"),
+            mae=("Abs_Error", "mean"),
+            bias=("Error", "mean"),
+            p_active_mean=("P_ACTIVE", "mean")
+        )
+        .reset_index()
+    )
+
+    out["sum_ratio"] = out["pred_sum"] / out["true_sum"].replace(0, np.nan)
+    out = out.sort_values("n", ascending=False)
+
+    return out
+
+
 if SEGMENT_COL in validation_results.columns:
     segment_report = group_diagnostics(validation_results, [SEGMENT_COL])
     display(segment_report)
