@@ -1,418 +1,96 @@
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
+import joblib
 
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    classification_report,
-    confusion_matrix,
-    mean_absolute_error,
-    median_absolute_error,
-    r2_score
-)
 
-import matplotlib.pyplot as plt
-import seaborn as sns
+# ============================================================
+# 1. LOAD MODEL ARTIFACTS
+# ============================================================
 
-RANDOM_STATE = 42
+MODEL_PATH = r"C:\Projects\DS-450_Corp_potential_income\scripts\models\expected_income_v2_segment_bucket_corrected.pkl"
 
-ID_COL = "IDENTIFYCODE"
-SEGMENT_COL = "FIRM_TYPE"
+model = joblib.load(MODEL_PATH)
 
-ACTIVE_THRESHOLD = 1000
-CLASSIFICATION_THRESHOLD = 0.5
+clf = model["clf"]
+reg = model["reg"]
 
-N_DECILES = 10
+feature_cols = model["feature_cols"]
+cat_cols = model["cat_cols"]
+cat_values = model["cat_values"]
 
-GAMMA = 3.0
-ZERO_THRESHOLD = 0.45
+ACTIVE_THRESHOLD = model["ACTIVE_THRESHOLD"]
+CLASSIFICATION_THRESHOLD = model["CLASSIFICATION_THRESHOLD"]
+GAMMA = model["GAMMA"]
+ZERO_THRESHOLD = model["ZERO_THRESHOLD"]
+bias_correction = model["bias_correction"]
 
-CALIBRATION_FACTOR_MIN = 0.25
-CALIBRATION_FACTOR_MAX = 3.0
+SEGMENT_COL = model["SEGMENT_COL"]
 
-SEGMENT_BUCKET_FACTOR_MIN = 0.05
-SEGMENT_BUCKET_FACTOR_MAX = 2.0
+calibration_table = model["calibration_table"]
+segment_calibration_table = model["segment_calibration_table"]
+global_calibration_factor = model["global_calibration_factor"]
+pred_decile_edges = model["pred_decile_edges"]
 
-MIN_GROUP_SIZE_FOR_CALIBRATION = 50
-MIN_GROUP_SIZE_FOR_SEGMENT_BUCKET = 50
+caps_by_segment = model["caps_by_segment"]
+global_cap = model["global_cap"]
 
-CAP_QUANTILE_BY_SEGMENT = 0.99
+segment_bucket_correction = model["segment_bucket_correction"]
+segment_bucket_fallback = model["segment_bucket_fallback"]
+global_segment_bucket_factor = model["global_segment_bucket_factor"]
+pred_bucket_edges = model["pred_bucket_edges"]
 
 
+# ============================================================
+# 2. HELPER FUNCTIONS
+# ============================================================
 
+def apply_fixed_bins(values, bin_edges):
+    values = pd.Series(values).clip(lower=0)
 
-df_model = X.copy()
-y_clean = pd.Series(y, index=X.index).clip(lower=0)
-
-y_binary = (y_clean > ACTIVE_THRESHOLD).astype(int)
-
-print("Target describe:")
-print(y_clean.describe())
-
-print("\nActive distribution:")
-print(y_binary.value_counts())
-print(y_binary.value_counts(normalize=True))
-
-df_model = X.copy()
-y_clean = pd.Series(y, index=X.index).clip(lower=0)
-
-y_binary = (y_clean > ACTIVE_THRESHOLD).astype(int)
-
-print("Target describe:")
-print(y_clean.describe())
-
-print("\nActive distribution:")
-print(y_binary.value_counts())
-print(y_binary.value_counts(normalize=True))
-
-X_train, X_val, y_train_raw, y_val_raw = train_test_split(
-    df_model,
-    y_clean,
-    test_size=0.2,
-    random_state=RANDOM_STATE,
-    stratify=y_binary
-)
-
-y_train_clf = (y_train_raw > ACTIVE_THRESHOLD).astype(int)
-y_val_clf = (y_val_raw > ACTIVE_THRESHOLD).astype(int)
-
-X_train, X_val, cat_cols, cat_values = prepare_categorical_train_valid(
-    X_train,
-    X_val
-)
-
-feature_cols = X_train.columns.tolist()
-
-print("X_train:", X_train.shape)
-print("X_val:", X_val.shape)
-print("cat_cols:", cat_cols)
-
-
-
-
-
-
-
-
-
-def build_segment_weights(X_part):
-    weights = pd.Series(1.0, index=X_part.index, dtype=float)
-
-    if SEGMENT_COL in X_part.columns:
-        seg = X_part[SEGMENT_COL].astype(str)
-
-        weights.loc[seg.eq("MICRO")] = 1.0
-        weights.loc[seg.eq("SMALL")] = 1.2
-        weights.loc[seg.eq("MEDIUM")] = 1.5
-        weights.loc[seg.eq("LARGE")] = 2.5
-
-    return weights
-
-
-clf_sample_weight = build_segment_weights(X_train)
-
-pos_rate = y_train_clf.mean()
-neg_rate = 1 - pos_rate
-
-if pos_rate > 0:
-    pos_multiplier = neg_rate / pos_rate
-else:
-    pos_multiplier = 1.0
-
-clf_sample_weight = clf_sample_weight * np.where(
-    y_train_clf == 1,
-    pos_multiplier,
-    1.0
-)
-
-print("Positive multiplier:", pos_multiplier)
-
-clf = lgb.LGBMClassifier(
-    objective="binary",
-    n_estimators=3000,
-    learning_rate=0.03,
-    num_leaves=31,
-    max_depth=-1,
-    min_child_samples=30,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=0.3,
-    reg_lambda=1.0,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
-
-print("Training Stage 1: classifier...")
-
-clf.fit(
-    X_train,
-    y_train_clf,
-    sample_weight=clf_sample_weight,
-    eval_set=[(X_val, y_val_clf)],
-    eval_metric="auc",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=150, verbose=False),
-        lgb.log_evaluation(period=100)
-    ]
-)
-
-train_p_active = clf.predict_proba(X_train)[:, 1]
-val_p_active = clf.predict_proba(X_val)[:, 1]
-
-val_class_pred = (val_p_active >= CLASSIFICATION_THRESHOLD).astype(int)
-
-print("=" * 80)
-print("[Stage 1: Classifier]")
-print(f"ROC-AUC Train: {roc_auc_score(y_train_clf, train_p_active):.4f}")
-print(f"ROC-AUC Val  : {roc_auc_score(y_val_clf, val_p_active):.4f}")
-print(f"PR-AUC Val   : {average_precision_score(y_val_clf, val_p_active):.4f}")
-print("-" * 80)
-print(classification_report(y_val_clf, val_class_pred))
-print(confusion_matrix(y_val_clf, val_class_pred))
-print("=" * 80)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-mask_train_reg = (y_train_raw > ACTIVE_THRESHOLD).values
-mask_val_reg = (y_val_raw > ACTIVE_THRESHOLD).values
-
-X_train_reg = X_train.loc[mask_train_reg].copy()
-X_val_reg = X_val.loc[mask_val_reg].copy()
-
-y_train_reg_raw = y_train_raw.loc[mask_train_reg].copy()
-y_val_reg_raw = y_val_raw.loc[mask_val_reg].copy()
-
-y_train_reg_log = np.log1p(y_train_reg_raw)
-y_val_reg_log = np.log1p(y_val_reg_raw)
-
-print("Regression train:", X_train_reg.shape)
-print("Regression val:", X_val_reg.shape)
-print(y_train_reg_raw.describe())
-
-
-reg_sample_weight = build_segment_weights(X_train_reg)
-
-reg_sample_weight = reg_sample_weight * (
-    1.0 + np.log1p(y_train_reg_raw) / np.log1p(y_train_reg_raw).max()
-)
-
-reg_sample_weight = build_segment_weights(X_train_reg)
-
-reg_sample_weight = reg_sample_weight * (
-    1.0 + np.log1p(y_train_reg_raw) / np.log1p(y_train_reg_raw).max()
-)
-reg = lgb.LGBMRegressor(
-    objective="huber",
-    n_estimators=4000,
-    learning_rate=0.03,
-    num_leaves=31,
-    max_depth=-1,
-    min_child_samples=30,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=0.3,
-    reg_lambda=1.0,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
-
-print("Training Stage 2: regressor...")
-
-reg.fit(
-    X_train_reg,
-    y_train_reg_log,
-    sample_weight=reg_sample_weight,
-    eval_set=[(X_val_reg, y_val_reg_log)],
-    eval_metric="mae",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=200, verbose=False),
-        lgb.log_evaluation(period=100)
-    ]
-)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-train_reg_pred_log = reg.predict(X_train_reg)
-train_residuals = y_train_reg_log - train_reg_pred_log
-
-sigma = np.std(train_residuals)
-bias_correction = np.exp(0.5 * sigma**2)
-
-print("sigma:", sigma)
-print("bias_correction:", bias_correction)
-
-train_income_if_active_log = reg.predict(X_train)
-val_income_if_active_log = reg.predict(X_val)
-
-train_income_if_active = np.expm1(train_income_if_active_log) * bias_correction
-val_income_if_active = np.expm1(val_income_if_active_log) * bias_correction
-
-train_income_if_active = np.clip(train_income_if_active, 0, None)
-val_income_if_active = np.clip(val_income_if_active, 0, None)
-
-train_expected_raw = (train_p_active ** GAMMA) * train_income_if_active
-val_expected_raw = (val_p_active ** GAMMA) * val_income_if_active
-
-train_expected_raw[train_p_active < ZERO_THRESHOLD] = 0
-val_expected_raw[val_p_active < ZERO_THRESHOLD] = 0
-
-train_expected_raw = np.clip(train_expected_raw, 0, None)
-val_expected_raw = np.clip(val_expected_raw, 0, None)
-
-
-
-
-
-
-
-
-
-
-
-def build_calibration_table(
-    X_val,
-    y_val_true,
-    y_val_pred_raw,
-    segment_col=SEGMENT_COL,
-    n_deciles=10,
-    min_group_size=50,
-    factor_min=0.25,
-    factor_max=3.0
-):
-    tmp = pd.DataFrame(index=X_val.index)
-
-    if segment_col in X_val.columns:
-        tmp[segment_col] = X_val[segment_col].astype(str).values
-    else:
-        tmp[segment_col] = "ALL"
-
-    tmp["true"] = y_val_true.values
-    tmp["pred_raw"] = np.clip(y_val_pred_raw, 0, None)
-
-    pred_decile, pred_decile_edges = make_qcut_bins(
-        tmp["pred_raw"],
-        n_bins=n_deciles
+    bucket = pd.cut(
+        values,
+        bins=bin_edges,
+        labels=False,
+        include_lowest=True
     )
 
-    tmp["pred_decile"] = pred_decile
+    bucket = pd.Series(bucket).fillna(0).astype(int)
 
-    global_factor = safe_ratio(
-        tmp["true"].sum(),
-        tmp["pred_raw"].sum(),
-        default=1.0
-    )
+    return bucket.values
 
-    segment_table = (
-        tmp.groupby(segment_col)
-        .agg(
-            n=("true", "size"),
-            true_sum=("true", "sum"),
-            pred_sum=("pred_raw", "sum")
+
+def prepare_X_for_inference(df, feature_cols, cat_cols, cat_values):
+    X_inf = df.copy()
+
+    missing_cols = [c for c in feature_cols if c not in X_inf.columns]
+
+    if missing_cols:
+        raise ValueError(f"Missing columns in inference dataframe: {missing_cols}")
+
+    X_inf = X_inf[feature_cols].copy()
+
+    for c in cat_cols:
+        X_inf[c] = pd.Categorical(
+            X_inf[c],
+            categories=cat_values[c]
         )
-        .reset_index()
-    )
 
-    segment_table["segment_factor"] = (
-        segment_table["true_sum"] /
-        segment_table["pred_sum"].replace(0, np.nan)
-    )
+    return X_inf
 
-    segment_table["segment_factor"] = (
-        segment_table["segment_factor"]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(global_factor)
-        .clip(factor_min, factor_max)
-    )
 
-    calibration_table = (
-        tmp.groupby([segment_col, "pred_decile"])
-        .agg(
-            n=("true", "size"),
-            true_sum=("true", "sum"),
-            pred_sum=("pred_raw", "sum"),
-            true_mean=("true", "mean"),
-            pred_mean=("pred_raw", "mean"),
-            true_median=("true", "median"),
-            pred_median=("pred_raw", "median")
-        )
-        .reset_index()
-    )
-
-    calibration_table["factor"] = (
-        calibration_table["true_sum"] /
-        calibration_table["pred_sum"].replace(0, np.nan)
-    )
-
-    calibration_table = calibration_table.merge(
-        segment_table[[segment_col, "segment_factor"]],
-        on=segment_col,
-        how="left"
-    )
-
-    calibration_table["factor"] = np.where(
-        calibration_table["n"] >= min_group_size,
-        calibration_table["factor"],
-        calibration_table["segment_factor"]
-    )
-
-    calibration_table["factor"] = (
-        calibration_table["factor"]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(global_factor)
-        .clip(factor_min, factor_max)
-    )
-
-    return calibration_table, segment_table, global_factor, pred_decile_edges
-
-def apply_calibration(
-    X_part,
+def apply_calibration_inference(
+    df_raw,
     pred_raw,
     calibration_table,
-    segment_table,
-    global_factor,
+    segment_calibration_table,
+    global_calibration_factor,
     pred_decile_edges,
-    segment_col=SEGMENT_COL
+    segment_col
 ):
-    tmp = pd.DataFrame(index=X_part.index)
+    tmp = pd.DataFrame(index=df_raw.index)
 
-    if segment_col in X_part.columns:
-        tmp[segment_col] = X_part[segment_col].astype(str).values
+    if segment_col in df_raw.columns:
+        tmp[segment_col] = df_raw[segment_col].astype(str).values
     else:
         tmp[segment_col] = "ALL"
 
@@ -426,13 +104,13 @@ def apply_calibration(
     )
 
     tmp = tmp.merge(
-        segment_table[[segment_col, "segment_factor"]],
+        segment_calibration_table[[segment_col, "segment_factor"]],
         on=segment_col,
         how="left"
     )
 
     tmp["factor"] = tmp["factor"].fillna(tmp["segment_factor"])
-    tmp["factor"] = tmp["factor"].fillna(global_factor)
+    tmp["factor"] = tmp["factor"].fillna(global_calibration_factor)
     tmp["factor"] = tmp["factor"].fillna(1.0)
 
     pred_calibrated = pred_raw * tmp["factor"].values
@@ -441,88 +119,19 @@ def apply_calibration(
     return pred_calibrated, tmp["factor"].values, tmp["pred_decile"].values
 
 
-
-calibration_table, segment_calibration_table, global_calibration_factor, pred_decile_edges = (
-    build_calibration_table(
-        X_val=X_val,
-        y_val_true=y_val_raw,
-        y_val_pred_raw=val_expected_raw,
-        segment_col=SEGMENT_COL,
-        n_deciles=N_DECILES,
-        min_group_size=MIN_GROUP_SIZE_FOR_CALIBRATION,
-        factor_min=CALIBRATION_FACTOR_MIN,
-        factor_max=CALIBRATION_FACTOR_MAX
-    )
-)
-
-display(calibration_table)
-display(segment_calibration_table)
-
-print("global_calibration_factor:", global_calibration_factor)
-
-calibration_table, segment_calibration_table, global_calibration_factor, pred_decile_edges = (
-    build_calibration_table(
-        X_val=X_val,
-        y_val_true=y_val_raw,
-        y_val_pred_raw=val_expected_raw,
-        segment_col=SEGMENT_COL,
-        n_deciles=N_DECILES,
-        min_group_size=MIN_GROUP_SIZE_FOR_CALIBRATION,
-        factor_min=CALIBRATION_FACTOR_MIN,
-        factor_max=CALIBRATION_FACTOR_MAX
-    )
-)
-
-display(calibration_table)
-display(segment_calibration_table)
-
-print("global_calibration_factor:", global_calibration_factor)
-
-
-
-
-
-
-
-
-
-
-
-
-
-train_expected_calibrated, train_calibration_factor, train_pred_decile = apply_calibration(
-    X_part=X_train,
-    pred_raw=train_expected_raw,
-    calibration_table=calibration_table,
-    segment_table=segment_calibration_table,
-    global_factor=global_calibration_factor,
-    pred_decile_edges=pred_decile_edges,
-    segment_col=SEGMENT_COL
-)
-
-val_expected_calibrated, val_calibration_factor, val_pred_decile = apply_calibration(
-    X_part=X_val,
-    pred_raw=val_expected_raw,
-    calibration_table=calibration_table,
-    segment_table=segment_calibration_table,
-    global_factor=global_calibration_factor,
-    pred_decile_edges=pred_decile_edges,
-    segment_col=SEGMENT_COL
-)
-
-def apply_caps(
-    X_part,
+def apply_caps_inference(
+    df_raw,
     pred,
     caps_by_segment,
     global_cap,
-    segment_col=SEGMENT_COL
+    segment_col
 ):
     pred = np.array(pred, dtype=float)
 
     caps = np.full(len(pred), global_cap, dtype=float)
 
-    if segment_col in X_part.columns:
-        segments = X_part[segment_col].astype(str).values
+    if segment_col in df_raw.columns:
+        segments = df_raw[segment_col].astype(str).values
 
         for i, seg in enumerate(segments):
             caps[i] = caps_by_segment.get(seg, global_cap)
@@ -532,527 +141,204 @@ def apply_caps(
 
     return pred_capped, caps
 
-caps_by_segment, global_cap = build_caps_by_segment(
-    X_train=X_train,
-    y_train=y_train_raw,
-    segment_col=SEGMENT_COL,
-    active_threshold=ACTIVE_THRESHOLD,
-    cap_quantile=CAP_QUANTILE_BY_SEGMENT
-)
 
-print("global_cap:", global_cap)
-print("caps_by_segment:", caps_by_segment)
-
-train_pred_capped, train_caps_used = apply_caps(
-    X_part=X_train,
-    pred=train_expected_calibrated,
-    caps_by_segment=caps_by_segment,
-    global_cap=global_cap,
-    segment_col=SEGMENT_COL
-)
-
-val_pred_capped, val_caps_used = apply_caps(
-    X_part=X_val,
-    pred=val_expected_calibrated,
-    caps_by_segment=caps_by_segment,
-    global_cap=global_cap,
-    segment_col=SEGMENT_COL
-)
-
-validation_results = pd.DataFrame({
-    ID_COL: X_val.index,
-    "True_Value": y_val_raw.values,
-    "P_ACTIVE": val_p_active,
-    "IS_LIKELY_ACTIVE": (val_p_active >= CLASSIFICATION_THRESHOLD).astype(int),
-    "Income_If_Active": val_income_if_active,
-    "Expected_Raw": val_expected_raw,
-    "Calibration_Factor": val_calibration_factor,
-    "Pred_Decile": val_pred_decile,
-    "Expected_Calibrated": val_expected_calibrated,
-    "Cap_Used": val_caps_used,
-    "Predicted_Before_Segment_Bucket_Correction": val_pred_capped
-}, index=X_val.index)
-
-if SEGMENT_COL in X_val.columns:
-    validation_results[SEGMENT_COL] = X_val[SEGMENT_COL].astype(str).values
-else:
-    validation_results[SEGMENT_COL] = "ALL"
-
-validation_results["Predicted"] = validation_results["Predicted_Before_Segment_Bucket_Correction"]
-validation_results["Error"] = validation_results["Predicted"] - validation_results["True_Value"]
-validation_results["Abs_Error"] = validation_results["Error"].abs()
-validation_results["Ratio"] = (
-    validation_results["Predicted"] /
-    validation_results["True_Value"].replace(0, np.nan)
-)
-
-validation_results.head()
-
-
-
-
-
-
-def build_segment_bucket_correction(
-    validation_results,
-    segment_col=SEGMENT_COL,
-    true_col="True_Value",
-    pred_col="Predicted",
-    n_bins=10,
-    min_group_size=50,
-    factor_min=0.05,
-    factor_max=2.0
-):
-    df_corr = validation_results.copy()
-
-    df_corr[pred_col] = df_corr[pred_col].clip(lower=0)
-
-    pred_bucket, pred_bucket_edges = make_qcut_bins(
-        df_corr[pred_col],
-        n_bins=n_bins
-    )
-
-    df_corr["pred_bucket"] = pred_bucket
-
-    global_factor = safe_ratio(
-        df_corr[true_col].sum(),
-        df_corr[pred_col].sum(),
-        default=1.0
-    )
-
-    segment_fallback = (
-        df_corr
-        .groupby(segment_col)
-        .agg(
-            segment_n=(true_col, "size"),
-            segment_true_sum=(true_col, "sum"),
-            segment_pred_sum=(pred_col, "sum")
-        )
-        .reset_index()
-    )
-
-    segment_fallback["segment_factor"] = (
-        segment_fallback["segment_true_sum"] /
-        segment_fallback["segment_pred_sum"].replace(0, np.nan)
-    )
-
-    segment_fallback["segment_factor"] = (
-        segment_fallback["segment_factor"]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(global_factor)
-        .clip(factor_min, factor_max)
-    )
-
-    correction_table = (
-        df_corr
-        .groupby([segment_col, "pred_bucket"])
-        .agg(
-            n=(true_col, "size"),
-            true_sum=(true_col, "sum"),
-            pred_sum=(pred_col, "sum"),
-            true_mean=(true_col, "mean"),
-            pred_mean=(pred_col, "mean"),
-            true_median=(true_col, "median"),
-            pred_median=(pred_col, "median")
-        )
-        .reset_index()
-    )
-
-    correction_table["factor"] = (
-        correction_table["true_sum"] /
-        correction_table["pred_sum"].replace(0, np.nan)
-    )
-
-    correction_table = correction_table.merge(
-        segment_fallback[[segment_col, "segment_factor"]],
-        on=segment_col,
-        how="left"
-    )
-
-    correction_table["factor"] = np.where(
-        correction_table["n"] >= min_group_size,
-        correction_table["factor"],
-        correction_table["segment_factor"]
-    )
-
-    correction_table["factor"] = (
-        correction_table["factor"]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(global_factor)
-        .clip(factor_min, factor_max)
-    )
-
-    return correction_table, segment_fallback, global_factor, pred_bucket_edges
-
-def apply_segment_bucket_correction(
-    X_part,
+def apply_segment_bucket_correction_inference(
+    df_raw,
     pred,
-    correction_table,
-    segment_fallback,
-    global_factor,
+    segment_bucket_correction,
+    segment_bucket_fallback,
+    global_segment_bucket_factor,
     pred_bucket_edges,
-    segment_col=SEGMENT_COL
+    segment_col
 ):
     pred = np.array(pred, dtype=float)
 
-    tmp = pd.DataFrame(index=X_part.index)
+    tmp = pd.DataFrame(index=df_raw.index)
     tmp["pred"] = np.clip(pred, 0, None)
 
-    if segment_col in X_part.columns:
-        tmp[segment_col] = X_part[segment_col].astype(str).values
+    if segment_col in df_raw.columns:
+        tmp[segment_col] = df_raw[segment_col].astype(str).values
     else:
         tmp[segment_col] = "ALL"
 
-    tmp["pred_bucket"] = apply_fixed_bins(tmp["pred"], pred_bucket_edges)
+    tmp["segment_pred_bucket"] = apply_fixed_bins(tmp["pred"], pred_bucket_edges)
 
     tmp = tmp.merge(
-        correction_table[[segment_col, "pred_bucket", "factor"]],
-        on=[segment_col, "pred_bucket"],
+        segment_bucket_correction[[segment_col, "pred_bucket", "factor"]],
+        left_on=[segment_col, "segment_pred_bucket"],
+        right_on=[segment_col, "pred_bucket"],
         how="left"
     )
 
     tmp = tmp.merge(
-        segment_fallback[[segment_col, "segment_factor"]],
+        segment_bucket_fallback[[segment_col, "segment_factor"]],
         on=segment_col,
         how="left"
     )
 
     tmp["factor"] = tmp["factor"].fillna(tmp["segment_factor"])
-    tmp["factor"] = tmp["factor"].fillna(global_factor)
+    tmp["factor"] = tmp["factor"].fillna(global_segment_bucket_factor)
     tmp["factor"] = tmp["factor"].fillna(1.0)
 
     pred_corrected = pred * tmp["factor"].values
     pred_corrected = np.clip(pred_corrected, 0, None)
 
-    return pred_corrected, tmp["factor"].values, tmp["pred_bucket"].values
+    return pred_corrected, tmp["factor"].values, tmp["segment_pred_bucket"].values
 
 
-segment_bucket_correction, segment_bucket_fallback, global_segment_bucket_factor, pred_bucket_edges = (
-    build_segment_bucket_correction(
-        validation_results=validation_results,
-        segment_col=SEGMENT_COL,
-        true_col="True_Value",
-        pred_col="Predicted",
-        n_bins=N_DECILES,
-        min_group_size=MIN_GROUP_SIZE_FOR_SEGMENT_BUCKET,
-        factor_min=SEGMENT_BUCKET_FACTOR_MIN,
-        factor_max=SEGMENT_BUCKET_FACTOR_MAX
+# ============================================================
+# 3. INFERENCE FUNCTION
+# ============================================================
+
+def predict_liabilities_potential(df_new):
+    df_raw = df_new.copy()
+
+    # -----------------------------
+    # Prepare features
+    # -----------------------------
+    X_inf = prepare_X_for_inference(
+        df=df_raw,
+        feature_cols=feature_cols,
+        cat_cols=cat_cols,
+        cat_values=cat_values
     )
-)
 
-display(segment_bucket_correction)
-display(segment_bucket_fallback)
+    # -----------------------------
+    # Stage 1: classifier
+    # -----------------------------
+    p_active = clf.predict_proba(X_inf)[:, 1]
 
-print("global_segment_bucket_factor:", global_segment_bucket_factor)
+    # -----------------------------
+    # Stage 2: regressor
+    # -----------------------------
+    pred_log = reg.predict(X_inf)
 
-val_final_pred, val_segment_bucket_factor, val_pred_bucket = apply_segment_bucket_correction(
-    X_part=X_val,
-    pred=val_pred_capped,
-    correction_table=segment_bucket_correction,
-    segment_fallback=segment_bucket_fallback,
-    global_factor=global_segment_bucket_factor,
-    pred_bucket_edges=pred_bucket_edges,
-    segment_col=SEGMENT_COL
-)
+    income_if_active = np.expm1(pred_log)
+    income_if_active = income_if_active * bias_correction
+    income_if_active = np.clip(income_if_active, 0, None)
 
-train_final_pred, train_segment_bucket_factor, train_pred_bucket = apply_segment_bucket_correction(
-    X_part=X_train,
-    pred=train_pred_capped,
-    correction_table=segment_bucket_correction,
-    segment_fallback=segment_bucket_fallback,
-    global_factor=global_segment_bucket_factor,
-    pred_bucket_edges=pred_bucket_edges,
-    segment_col=SEGMENT_COL
-)
+    # -----------------------------
+    # Expected value
+    # -----------------------------
+    expected_raw = (p_active ** GAMMA) * income_if_active
+
+    expected_raw[p_active < ZERO_THRESHOLD] = 0
+    expected_raw = np.clip(expected_raw, 0, None)
+
+    # -----------------------------
+    # Calibration
+    # -----------------------------
+    expected_calibrated, calibration_factor, pred_decile = apply_calibration_inference(
+        df_raw=df_raw,
+        pred_raw=expected_raw,
+        calibration_table=calibration_table,
+        segment_calibration_table=segment_calibration_table,
+        global_calibration_factor=global_calibration_factor,
+        pred_decile_edges=pred_decile_edges,
+        segment_col=SEGMENT_COL
+    )
+
+    # -----------------------------
+    # Caps
+    # -----------------------------
+    pred_capped, cap_used = apply_caps_inference(
+        df_raw=df_raw,
+        pred=expected_calibrated,
+        caps_by_segment=caps_by_segment,
+        global_cap=global_cap,
+        segment_col=SEGMENT_COL
+    )
+
+    # -----------------------------
+    # Segment × prediction bucket correction
+    # -----------------------------
+    final_pred, segment_bucket_factor, segment_pred_bucket = apply_segment_bucket_correction_inference(
+        df_raw=df_raw,
+        pred=pred_capped,
+        segment_bucket_correction=segment_bucket_correction,
+        segment_bucket_fallback=segment_bucket_fallback,
+        global_segment_bucket_factor=global_segment_bucket_factor,
+        pred_bucket_edges=pred_bucket_edges,
+        segment_col=SEGMENT_COL
+    )
+
+    # -----------------------------
+    # Output
+    # -----------------------------
+    result = df_raw.copy()
+
+    result["P_LIABILITIES_ACTIVE"] = p_active
+    result["IS_LIKELY_ACTIVE"] = (p_active >= CLASSIFICATION_THRESHOLD).astype(int)
+
+    result["LIABILITIES_IF_ACTIVE"] = income_if_active
+    result["LIABILITIES_EXPECTED_RAW"] = expected_raw
+
+    result["CALIBRATION_FACTOR"] = calibration_factor
+    result["PRED_DECILE"] = pred_decile
+    result["LIABILITIES_EXPECTED_CALIBRATED"] = expected_calibrated
+
+    result["CAP_USED"] = cap_used
+    result["LIABILITIES_AFTER_CAP"] = pred_capped
+
+    result["SEGMENT_BUCKET_FACTOR"] = segment_bucket_factor
+    result["SEGMENT_PRED_BUCKET"] = segment_pred_bucket
+
+    result["LIABILITIES_POTENTIAL"] = final_pred
+
+    return result
 
 
+# ============================================================
+# 4. RUN INFERENCE
+# ============================================================
+
+# df — твій inference dataframe
+df_pred = predict_liabilities_potential(df)
 
 
-
-validation_results["Segment_Bucket_Factor"] = val_segment_bucket_factor
-validation_results["Segment_Pred_Bucket"] = val_pred_bucket
-validation_results["Predicted"] = val_final_pred
-
-validation_results["Error"] = validation_results["Predicted"] - validation_results["True_Value"]
-validation_results["Abs_Error"] = validation_results["Error"].abs()
-validation_results["Ratio"] = (
-    validation_results["Predicted"] /
-    validation_results["True_Value"].replace(0, np.nan)
-)
+# ============================================================
+# 5. OPTIONAL: ROUND OUTPUT
+# ============================================================
 
 round_cols = [
-    "P_ACTIVE",
-    "Income_If_Active",
-    "Expected_Raw",
-    "Calibration_Factor",
-    "Expected_Calibrated",
-    "Cap_Used",
-    "Predicted_Before_Segment_Bucket_Correction",
-    "Segment_Bucket_Factor",
-    "Predicted",
-    "Error",
-    "Abs_Error",
-    "Ratio"
+    "P_LIABILITIES_ACTIVE",
+    "LIABILITIES_IF_ACTIVE",
+    "LIABILITIES_EXPECTED_RAW",
+    "CALIBRATION_FACTOR",
+    "LIABILITIES_EXPECTED_CALIBRATED",
+    "CAP_USED",
+    "LIABILITIES_AFTER_CAP",
+    "SEGMENT_BUCKET_FACTOR",
+    "LIABILITIES_POTENTIAL"
 ]
 
 for c in round_cols:
-    if c in validation_results.columns:
-        validation_results[c] = validation_results[c].round(4)
-
-validation_results.head(20)
-
-
-
-
-
-
-
-
-
-
-
-
-
-def regression_metrics(y_true, y_pred, title):
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-
-    y_true_log = np.log1p(y_true)
-    y_pred_log = np.log1p(np.clip(y_pred, 0, None))
-
-    eps = 1e-9
-
-    print("=" * 80)
-    print(title)
-    print("-" * 80)
-    print(f"MAE       : {mean_absolute_error(y_true, y_pred):,.4f}")
-    print(f"MedAE     : {median_absolute_error(y_true, y_pred):,.4f}")
-    print(f"R2        : {r2_score(y_true, y_pred):,.4f}")
-    print(f"MAE_log   : {mean_absolute_error(y_true_log, y_pred_log):,.4f}")
-    print(f"MedAE_log : {median_absolute_error(y_true_log, y_pred_log):,.4f}")
-    print(f"R2_log    : {r2_score(y_true_log, y_pred_log):,.4f}")
-    print("-" * 80)
-    print(f"sum_true  : {y_true.sum():,.4f}")
-    print(f"sum_pred  : {y_pred.sum():,.4f}")
-    print(f"sum_ratio : {y_pred.sum() / max(y_true.sum(), eps):,.4f}")
-    print(f"mean_true : {y_true.mean():,.4f}")
-    print(f"mean_pred : {y_pred.mean():,.4f}")
-    print(f"bias_mean : {np.mean(y_pred - y_true):,.4f}")
-    print(f"bias_sum  : {(y_pred.sum() - y_true.sum()):,.4f}")
-    print("=" * 80)
-
-
-regression_metrics(
-    y_val_raw,
-    val_pred_capped,
-    "[Validation] Before Segment × Prediction Bucket Correction"
-)
-
-regression_metrics(
-    y_val_raw,
-    val_final_pred,
-    "[Validation] After Segment × Prediction Bucket Correction"
-)
-
-regression_metrics(
-    y_train_raw,
-    train_final_pred,
-    "[Train] Final Prediction"
-)
-
-
-
-
-
-
-
-
-
-
-segment_report = (
-    validation_results
-    .groupby(SEGMENT_COL)
-    .agg(
-        n=("True_Value", "size"),
-        true_sum=("True_Value", "sum"),
-        pred_sum_before=("Predicted_Before_Segment_Bucket_Correction", "sum"),
-        pred_sum_after=("Predicted", "sum"),
-        true_mean=("True_Value", "mean"),
-        pred_mean_before=("Predicted_Before_Segment_Bucket_Correction", "mean"),
-        pred_mean_after=("Predicted", "mean"),
-        true_median=("True_Value", "median"),
-        pred_median_before=("Predicted_Before_Segment_Bucket_Correction", "median"),
-        pred_median_after=("Predicted", "median"),
-        mae_after=("Abs_Error", "mean"),
-        p_active_mean=("P_ACTIVE", "mean")
-    )
-    .reset_index()
-)
-
-segment_report["ratio_before"] = (
-    segment_report["pred_sum_before"] /
-    segment_report["true_sum"].replace(0, np.nan)
-)
-
-segment_report["ratio_after"] = (
-    segment_report["pred_sum_after"] /
-    segment_report["true_sum"].replace(0, np.nan)
-)
-
-display(segment_report)
-
-
-
-
-segment_bucket_report = (
-    validation_results
-    .groupby([SEGMENT_COL, "Segment_Pred_Bucket"])
-    .agg(
-        n=("True_Value", "size"),
-        true_sum=("True_Value", "sum"),
-        pred_sum=("Predicted", "sum"),
-        true_mean=("True_Value", "mean"),
-        pred_mean=("Predicted", "mean"),
-        true_median=("True_Value", "median"),
-        pred_median=("Predicted", "median"),
-        factor=("Segment_Bucket_Factor", "mean")
-    )
-    .reset_index()
-)
-
-segment_bucket_report["sum_ratio"] = (
-    segment_bucket_report["pred_sum"] /
-    segment_bucket_report["true_sum"].replace(0, np.nan)
-)
-
-display(segment_bucket_report)
-
-
-# MICRO/SMALL, true very low, prediction still high
-problem_low_clients = validation_results[
-    (validation_results[SEGMENT_COL].isin(["MICRO", "SMALL"])) &
-    (validation_results["True_Value"] < 100) &
-    (validation_results["Predicted"] > 1000)
-].sort_values("Predicted", ascending=False)
-
-problem_low_clients.head(50)
-# Biggest overpredictions
-validation_results.sort_values("Error", ascending=False).head(50)
-
-# Biggest underpredictions
-validation_results.sort_values("Error", ascending=True).head(50)
-
-sns.set_theme(style="whitegrid")
-
-plt.figure(figsize=(11, 6))
-
-sns.kdeplot(
-    np.log1p(validation_results["True_Value"]),
-    label="True",
-    fill=True,
-    alpha=0.25
-)
-
-sns.kdeplot(
-    np.log1p(validation_results["Predicted"]),
-    label="Predicted",
-    linestyle="--"
-)
-
-plt.xlabel("log1p income")
-plt.ylabel("Density")
-plt.title("Distribution Match: True vs Final Prediction")
-plt.legend()
-plt.show()
-
-
-plt.figure(figsize=(8, 6))
-
-plt.scatter(
-    np.log1p(validation_results["True_Value"]),
-    np.log1p(validation_results["Predicted"]),
-    alpha=0.25,
-    s=15
-)
-
-mx = max(
-    np.log1p(validation_results["True_Value"]).max(),
-    np.log1p(validation_results["Predicted"]).max()
-)
-
-plt.plot([0, mx], [0, mx], "--")
-
-plt.xlabel("True log1p income")
-plt.ylabel("Predicted log1p income")
-plt.title("True vs Predicted")
-plt.show()
-
-
-
-
-
-
-
-
-validation_results_view = validation_results[
-    [
-        ID_COL,
-        SEGMENT_COL,
-        "True_Value",
-        "P_ACTIVE",
-        "Income_If_Active",
-        "Expected_Raw",
-        "Expected_Calibrated",
-        "Cap_Used",
-        "Predicted_Before_Segment_Bucket_Correction",
-        "Segment_Bucket_Factor",
-        "Segment_Pred_Bucket",
-        "Predicted",
-        "Error",
-        "Abs_Error",
-        "Ratio"
-    ]
-].copy()
-
-validation_results_view.head(30)
-
-
-
-
-
-
-
-
-
-
-
-model_artifacts = {
-    "clf": clf,
-    "reg": reg,
-
-    "feature_cols": feature_cols,
-    "cat_cols": cat_cols,
-    "cat_values": cat_values,
-
-    "ACTIVE_THRESHOLD": ACTIVE_THRESHOLD,
-    "CLASSIFICATION_THRESHOLD": CLASSIFICATION_THRESHOLD,
-    "GAMMA": GAMMA,
-    "ZERO_THRESHOLD": ZERO_THRESHOLD,
-    "bias_correction": bias_correction,
-
-    "SEGMENT_COL": SEGMENT_COL,
-    "N_DECILES": N_DECILES,
-
-    "calibration_table": calibration_table,
-    "segment_calibration_table": segment_calibration_table,
-    "global_calibration_factor": global_calibration_factor,
-    "pred_decile_edges": pred_decile_edges,
-
-    "caps_by_segment": caps_by_segment,
-    "global_cap": global_cap,
-
-    "segment_bucket_correction": segment_bucket_correction,
-    "segment_bucket_fallback": segment_bucket_fallback,
-    "global_segment_bucket_factor": global_segment_bucket_factor,
-    "pred_bucket_edges": pred_bucket_edges
-}
+    if c in df_pred.columns:
+        if c in ["P_LIABILITIES_ACTIVE", "CALIBRATION_FACTOR", "SEGMENT_BUCKET_FACTOR"]:
+            df_pred[c] = df_pred[c].round(4)
+        else:
+            df_pred[c] = df_pred[c].round(2)
+
+
+# ============================================================
+# 6. VIEW MAIN RESULT
+# ============================================================
+
+main_cols = []
+
+for c in ["IDENTIFYCODE", "FIRM_TYPE"]:
+    if c in df_pred.columns:
+        main_cols.append(c)
+
+main_cols += [
+    "P_LIABILITIES_ACTIVE",
+    "LIABILITIES_IF_ACTIVE",
+    "LIABILITIES_EXPECTED_RAW",
+    "LIABILITIES_EXPECTED_CALIBRATED",
+    "LIABILITIES_AFTER_CAP",
+    "SEGMENT_BUCKET_FACTOR",
+    "LIABILITIES_POTENTIAL"
+]
+
+df_result = df_pred[main_cols].copy()
+df["LIABILITIES_POTENTIAL"] = df_pred["LIABILITIES_POTENTIAL"].values
