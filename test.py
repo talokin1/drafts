@@ -1,44 +1,91 @@
-from sklearn.metrics import precision_recall_curve
-import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
+import pandas as pd
+import joblib
 
-# 1. Рахуємо значення P, R та пороги
-precisions, recalls, thresholds = precision_recall_curve(y_val_clf, val_class_proba)
+class LiabilitiesSmallModel:
+    """Модель для мас-маркету (MICRO, SMALL). Використовує MAE/L1 регресор."""
+    def __init__(self, classifier, regressor, cat_cols, feature_cols, classification_threshold=0.5):
+        self.classifier = classifier
+        self.regressor = regressor
+        self.cat_cols = cat_cols
+        self.feature_cols = feature_cols
+        self.classification_threshold = classification_threshold
 
-# Масив thresholds на 1 елемент коротший за precisions/recalls, 
-# тому відкидаємо останній елемент для побудови графіків
-precisions = precisions[:-1]
-recalls = recalls[:-1]
+    def predict(self, X):
+        if X.empty:
+            return np.array([])
+            
+        # Залізно відбираємо тільки ті фічі, на яких модель навчалася (наприклад, 173 шт)
+        X_pred = X[self.feature_cols].copy()
 
-# 2. Рахуємо F1-score для кожного порогу (щоб знайти математичний баланс)
-# Додаємо eps, щоб уникнути ділення на нуль
-f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
-best_f1_idx = np.argmax(f1_scores)
-best_f1_threshold = thresholds[best_f1_idx]
+        # Конвертація категоріальних змінних
+        for c in self.cat_cols:
+            if c in X_pred.columns:
+                X_pred[c] = X_pred[c].astype("category")
 
-# 3. Будуємо графік
-sns.set_theme(style="whitegrid")
-plt.figure(figsize=(12, 6))
+        # Stage 1: Класифікатор з кастомним порогом
+        class_proba = self.classifier.predict_proba(X_pred)[:, 1]
+        class_preds = (class_proba >= self.classification_threshold).astype(int)
 
-# Лінія Precision
-plt.plot(thresholds, precisions, label='Precision (Точність)', color='blue', linewidth=2)
-# Лінія Recall
-plt.plot(thresholds, recalls, label='Recall (Повнота)', color='green', linewidth=2)
-# Лінія F1
-plt.plot(thresholds, f1_scores, label='F1 Score (Баланс)', color='purple', linestyle='--', alpha=0.7)
+        # Stage 2: Регресор (повернення з log1p)
+        reg_preds_log = self.regressor.predict(X_pred)
+        reg_preds = np.expm1(reg_preds_log)
 
-# Позначаємо поточний поріг (0.467)
-plt.axvline(x=0.467, color='red', linestyle=':', label='Твій поточний поріг (0.467)')
+        # Об'єднання
+        final_predictions = np.where(class_preds == 1, reg_preds, 0)
+        return final_predictions
 
-# Позначаємо найкращий поріг по F1
-plt.axvline(x=best_f1_threshold, color='purple', linestyle=':', 
-            label=f'Макс. F1 поріг ({best_f1_threshold:.3f})')
 
-plt.title('Precision-Recall Trade-off vs Classification Threshold')
-plt.xlabel('Classification Threshold')
-plt.ylabel('Score')
-plt.legend(loc='lower left')
-plt.xlim([0, 1])
-plt.ylim([0, 1.05])
-plt.show()
+class LiabilitiesLargeModel:
+    """Модель для великого бізнесу (LARGE). Використовує Tweedie регресор."""
+    def __init__(self, classifier, regressor, cat_cols, feature_cols, classification_threshold=0.5):
+        self.classifier = classifier
+        self.regressor = regressor
+        self.cat_cols = cat_cols
+        self.feature_cols = feature_cols
+        self.classification_threshold = classification_threshold
+
+    def predict(self, X):
+        if X.empty:
+            return np.array([])
+            
+        # Залізно відбираємо тільки ті фічі, на яких модель навчалася
+        X_pred = X[self.feature_cols].copy()
+
+        # Конвертація категоріальних змінних
+        for c in self.cat_cols:
+             if c in X_pred.columns:
+                X_pred[c] = X_pred[c].astype("category")
+
+        # Stage 1: Класифікатор з кастомним порогом
+        class_proba = self.classifier.predict_proba(X_pred)[:, 1]
+        class_preds = (class_proba >= self.classification_threshold).astype(int)
+
+        # Stage 2: Регресор (повернення з log1p)
+        reg_preds_log = self.regressor.predict(X_pred)
+        reg_preds = np.expm1(reg_preds_log)
+
+        # Об'єднання
+        final_predictions = np.where(class_preds == 1, reg_preds, 0)
+        return final_predictions
+    
+
+# ЗБЕРЕЖЕННЯ МОДЕЛІ ДЛЯ БІДНИХ
+small_model = LiabilitiesSmallModel(
+    classifier=clf_small, # твій навчений класифікатор
+    regressor=reg_small,  # твій навчений регресор (з MAE)
+    cat_cols=cat_cols, 
+    feature_cols=X_train.columns.to_list(), # ФІКСУЄМО 173 ФІЧІ
+    classification_threshold=CLASSIFICATION_TRESHOLD # наприклад, 0.5 або 0.41
+)
+joblib.dump(small_model, r'...\Liabilities_SMALL.pkl')
+
+# ЗБЕРЕЖЕННЯ МОДЕЛІ ДЛЯ БАГАТИХ
+large_model = LiabilitiesLargeModel(
+    classifier=clf_large, 
+    regressor=reg_large,  # твій навчений регресор (з Tweedie)
+    cat_cols=cat_cols,
+    feature_cols=X_train.columns.to_list(), # ФІКСУЄМО 173 ФІЧІ
+    classification_threshold=CLASSIFICATION_TRESHOLD 
+)
+joblib.dump(large_model, r'...\Liabilities_LARGE.pkl')
