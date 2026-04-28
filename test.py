@@ -1,44 +1,55 @@
-bad_cols = [
-    "CURR_ACC",
-    "INCOME_LIABILITIES",
-    "LIABILITIES_POTENTIAL",
-    "MONTHLY_INCOME",
-    "ACCOUNTS_POTENTIAL",
-    "Predicted",
-    "True_Value"
-]
+# =========================
+# SEGMENT-AWARE EXPECTED VALUE
+# =========================
 
-[c for c in bad_cols if c in feature_cols]
+GAMMA_BY_SEGMENT = {
+    "MICRO": 5.0,
+    "SMALL": 4.0,
+    "MEDIUM": 3.0,
+    "LARGE": 2.0
+}
 
+ZERO_THRESHOLD_BY_SEGMENT = {
+    "MICRO": 0.55,
+    "SMALL": 0.45,
+    "MEDIUM": 0.35,
+    "LARGE": 0.25
+}
 
+MANUAL_CAPS_BY_SEGMENT = {
+    "MICRO": 2_000,
+    "SMALL": 7_000,
+    "MEDIUM": 25_000,
+    "LARGE": 150_000
+}
 
+segments = df["FIRM_TYPE"].astype(str).values
 
+gamma_arr = np.array([
+    GAMMA_BY_SEGMENT.get(seg, 3.0)
+    for seg in segments
+])
 
+zero_threshold_arr = np.array([
+    ZERO_THRESHOLD_BY_SEGMENT.get(seg, 0.4)
+    for seg in segments
+])
 
-df_debug = df.copy()
+manual_caps = np.array([
+    MANUAL_CAPS_BY_SEGMENT.get(seg, 50_000)
+    for seg in segments
+])
 
-df_debug["P_ACTIVE"] = p_active
-df_debug["INCOME_IF_ACTIVE"] = income_if_active
-df_debug["EXPECTED_RAW"] = (p_active ** GAMMA) * income_if_active
-df_debug["CALIBRATION_FACTOR"] = tmp["factor"].values
-df_debug["EXPECTED_AFTER_CALIBRATION"] = pred
-df_debug["CAP_USED"] = caps
-df_debug["LIABILITIES_POTENTIAL"] = np.minimum(pred, caps)
+# base expected value
+pred = (p_active ** gamma_arr) * income_if_active
 
-debug_cols = [
-    "IDENTIFYCODE",
-    "FIRM_TYPE",
-    "INCOME_LIABILITIES",
-    "P_ACTIVE",
-    "INCOME_IF_ACTIVE",
-    "EXPECTED_RAW",
-    "CALIBRATION_FACTOR",
-    "EXPECTED_AFTER_CALIBRATION",
-    "CAP_USED",
-    "LIABILITIES_POTENTIAL"
-]
+# explicit zero correction
+pred[p_active < zero_threshold_arr] = 0
 
-df_debug[debug_cols].sort_values(
-    "LIABILITIES_POTENTIAL",
-    ascending=False
-).head(50)
+# manual business caps
+pred = np.minimum(pred, manual_caps)
+
+# safety
+pred = np.clip(pred, 0, None)
+
+df["LIABILITIES_POTENTIAL"] = pred
