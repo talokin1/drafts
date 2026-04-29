@@ -270,8 +270,27 @@ val_income_if_active = np.expm1(val_income_if_active_log)
 train_income_if_active = np.clip(train_income_if_active, 0, None)
 val_income_if_active = np.clip(val_income_if_active, 0, None)
 
-train_expected_raw = train_p_active * train_income_if_active
-val_expected_raw = val_p_active * val_income_if_active
+GAMMA = 2.0          # 1.5–3.0 тюнити
+ZERO_THRESHOLD = 0.2 # 0.15–0.3 тюнити
+
+# bias correction
+train_income_if_active = train_income_if_active * bias_correction
+val_income_if_active = val_income_if_active * bias_correction
+
+# tempered expected value
+train_expected_raw = (train_p_active ** GAMMA) * train_income_if_active
+val_expected_raw = (val_p_active ** GAMMA) * val_income_if_active
+
+# explicit zero correction
+train_expected_raw[train_p_active < ZERO_THRESHOLD] = 0
+val_expected_raw[val_p_active < ZERO_THRESHOLD] = 0
+
+
+## OPTIANBLE
+TAIL_BOOST = 0.3  # 0.2–0.5
+
+train_expected_raw *= (1 + TAIL_BOOST * (train_p_active > 0.8))
+val_expected_raw *= (1 + TAIL_BOOST * (val_p_active > 0.8))
 
 val_hard_gate_pred = np.where(
     val_p_active >= CLASSIFICATION_THRESHOLD,
