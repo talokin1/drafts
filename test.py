@@ -270,20 +270,58 @@ val_income_if_active = np.expm1(val_income_if_active_log)
 train_income_if_active = np.clip(train_income_if_active, 0, None)
 val_income_if_active = np.clip(val_income_if_active, 0, None)
 
-GAMMA = 2.0          # 1.5–3.0 тюнити
-ZERO_THRESHOLD = 0.2 # 0.15–0.3 тюнити
+from sklearn.metrics import precision_recall_curve
 
-# bias correction
-train_income_if_active = train_income_if_active * bias_correction
-val_income_if_active = val_income_if_active * bias_correction
+# =========================
+# AUTO ZERO THRESHOLD TUNING
+# =========================
 
-# tempered expected value
+precision, recall, thresholds = precision_recall_curve(y_val_active, val_p_active)
+
+pr_df = pd.DataFrame({
+    "threshold": np.r_[thresholds, 1.0],
+    "precision": precision,
+    "recall": recall
+})
+
+# Важливо: нам треба зменшити false positives,
+# тому фіксуємо мінімальну precision.
+MIN_PRECISION = 0.65   # тюнити: 0.60 / 0.65 / 0.70
+MIN_RECALL = 0.35      # щоб не вбити всіх активних
+
+candidates = pr_df[
+    (pr_df["precision"] >= MIN_PRECISION) &
+    (pr_df["recall"] >= MIN_RECALL)
+].copy()
+
+if len(candidates) > 0:
+    ZERO_THRESHOLD = candidates.sort_values("recall", ascending=False)["threshold"].iloc[0]
+else:
+    # fallback: робимо active rate predicted близьким до true active rate
+    true_active_rate = y_val_active.mean()
+    ZERO_THRESHOLD = np.quantile(val_p_active, 1 - true_active_rate)
+
+print("Selected ZERO_THRESHOLD:", ZERO_THRESHOLD)
+print("True active rate:", y_val_active.mean())
+print("Predicted active rate:", np.mean(val_p_active >= ZERO_THRESHOLD))
+
+# =========================
+# STRONGER EXPECTED VALUE
+# =========================
+
+GAMMA = 3.0  # було 2.0; підсилюємо покарання для low-confidence clients
+
 train_expected_raw = (train_p_active ** GAMMA) * train_income_if_active
 val_expected_raw = (val_p_active ** GAMMA) * val_income_if_active
 
 # explicit zero correction
 train_expected_raw[train_p_active < ZERO_THRESHOLD] = 0
 val_expected_raw[val_p_active < ZERO_THRESHOLD] = 0
+
+# bias correction
+train_income_if_active = train_income_if_active * bias_correction
+val_income_if_active = val_income_if_active * bias_correction
+
 
 
 ## OPTIANBLE
