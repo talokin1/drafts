@@ -1,89 +1,28 @@
-import joblib
+def build_caps_by_segment(
+    X_train,
+    y_train,
+    segment_col=SEGMENT_COL,
+    active_threshold=ACTIVE_THRESHOLD,
+    cap_quantile=0.99
+):
+    tmp = X_train[[segment_col]].copy() if segment_col in X_train.columns else pd.DataFrame(index=X_train.index)
 
-artifact = {
-    "model": reg,
-    "features": features_to_use,
-    "cat_cols": cat_cols,
-}
+    if segment_col not in tmp.columns:
+        tmp[segment_col] = "ALL"
 
-joblib.dump(artifact, "income_model.pkl")
+    tmp["target"] = y_train.values
 
+    tmp_active = tmp[tmp["target"] > active_threshold].copy()
 
-import numpy as np
-import pandas as pd
-import joblib
+    caps = (
+        tmp_active.groupby(segment_col)["target"]
+        .quantile(cap_quantile)
+        .to_dict()
+    )
 
+    global_cap = tmp_active["target"].quantile(cap_quantile)
 
-# =========================
-# LOAD MODEL
-# =========================
-artifact = joblib.load("income_model.pkl")
+    if pd.isna(global_cap):
+        global_cap = y_train.quantile(cap_quantile)
 
-model = artifact["model"]
-features = artifact["features"]
-cat_cols = artifact["cat_cols"]
-
-
-# =========================
-# TRANSFORMS (ТІ Ж САМІ!)
-# =========================
-def signed_log1p(x):
-    return np.sign(x) * np.log1p(np.abs(x))
-
-
-def apply_transforms(df):
-    df = df.copy()
-
-    for col in df.columns:
-        if col.endswith(("_CUR", "_PREV", "_DIF")):
-            if col in df:
-                df[col] = signed_log1p(df[col])
-
-        elif col == "NB_EMPL":
-            df[col] = np.log1p(df[col])
-
-    return df
-
-
-# =========================
-# PREPARE DATA
-# =========================
-def prepare_X(df):
-    df = df.copy()
-
-    # трансформації
-    df = apply_transforms(df)
-
-    # залишаємо тільки потрібні фічі
-    X = df[features].copy()
-
-    # категоріальні
-    for c in cat_cols:
-        if c in X.columns:
-            X[c] = X[c].astype("category")
-
-    return X
-
-
-# =========================
-# PREDICT
-# =========================
-def predict(df):
-    X = prepare_X(df)
-
-    y_pred_log = model.predict(X)
-    y_pred = np.expm1(y_pred_log)
-
-    return y_pred
-
-
-# =========================
-# USAGE
-# =========================
-# df_new = pd.read_csv("new_clients.csv")
-
-# preds = predict(df_new)
-
-# df_new["ACCOUNTS_POTENTIAL"] = preds
-
-# df_new[["IDENTIFYCODE", "ACCOUNTS_POTENTIAL"]].to_csv("predictions.csv", index=False)
+    return caps, global_cap
