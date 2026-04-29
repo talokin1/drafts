@@ -1,124 +1,70 @@
-test_clients_agg = (
-    test_clients
-    .groupby("IDENTIFYCODE", as_index=False)
-    .agg({
-        "CONTRAGENTID": lambda x: ",".join(sorted(x.dropna().astype(str).unique())),
-        "INCOME_LIABILITIES": "sum",
-        "INCOME_ASSETS": "sum",
-        "COMMISSIONS": "sum",
-        "MONTHLY_INCOME": "sum"
-    })
-)
+import joblib
+
+# Твій код навчання...
+# reg.fit(...)
+
+# 1. Зберігаємо саму модель
+model_filename = 'lgbm_profit_model.joblib'
+joblib.dump(reg, model_filename)
+
+# 2. Зберігаємо список категоріальних колонок (це критично для інференсу!)
+# Щоб при передбаченні ми точно знали, які колонки конвертувати в 'category'
+cat_cols_filename = 'lgbm_cat_cols.joblib'
+joblib.dump(cat_cols, cat_cols_filename)
+
+print(f"Модель успішно збережена у {model_filename}")
 
 
-print("test_clients rows before:", len(test_clients))
-print("test_clients rows after agg:", len(test_clients_agg))
-print("duplicated IDENTIFYCODE after agg:", test_clients_agg["IDENTIFYCODE"].duplicated().sum())
+import numpy as np
+import pandas as pd
+import joblib
 
+class ProfitPredictor:
+    def __init__(self, model_path: str, cat_cols_path: str):
+        """
+        Ініціалізує предиктор, завантажуючи модель та метадані.
+        """
+        self.model = joblib.load(model_path)
+        self.cat_cols = joblib.load(cat_cols_path)
+        
+    def predict(self, X_new: pd.DataFrame) -> np.ndarray:
+        """
+        Робить прогноз для нових даних і повертає результат у реальному масштабі.
+        """
+        # Створюємо копію, щоб не змінювати оригінальний датафрейм
+        X_processed = X_new.copy()
+        
+        # 1. Перетворення категоріальних ознак
+        # LightGBM вимагає, щоб категоріальні колонки мали тип 'category'
+        for c in self.cat_cols:
+            if c in X_processed.columns:
+                X_processed[c] = X_processed[c].astype("category")
+                
+        # 2. Отримання прогнозу (результат буде в просторі log1p)
+        y_pred_log = self.model.predict(X_processed)
+        
+        # 3. Зворотне перетворення (експоненціювання)
+        y_pred_real = np.expm1(y_pred_log)
+        
+        return y_pred_real
 
-df_tmp = df.merge(
-    test_clients_agg,
-    how="left",
-    on="IDENTIFYCODE",
-    validate="m:1"
-)
+# ==========================================
+# ПРИКЛАД ВИКОРИСТАННЯ (ІНФЕРЕНС)
+# ==========================================
 
-print("df rows before merge:", len(df))
-print("df rows after merge:", len(df_tmp))
-
-
-
-
-
-
-
-
-
-
-
-
-# -----------------------------
-# 1. Нормалізація ключів
-# -----------------------------
-
-def normalize_id(s):
-    return (
-        s.astype(str)
-         .str.strip()
-         .str.replace(r"\.0$", "", regex=True)
-         .str.zfill(8)
+if __name__ == "__main__":
+    # Уявимо, що це твої нові дані, які прийшли з бази
+    # new_data = pd.read_csv('new_customers.csv')
+    
+    # Для прикладу створимо фіктивний DataFrame
+    # new_data = pd.DataFrame({'feature1': [10, 20], 'cat_feature': ['A', 'B']})
+    
+    # Ініціалізуємо наш клас
+    predictor = ProfitPredictor(
+        model_path='lgbm_profit_model.joblib',
+        cat_cols_path='lgbm_cat_cols.joblib'
     )
-
-active_clients = active_clients.copy()
-income_data = income_data.copy()
-df = df.copy()
-
-active_clients["IDENTIFYCODE"] = normalize_id(active_clients["IDENTIFYCODE"])
-df["IDENTIFYCODE"] = normalize_id(df["IDENTIFYCODE"])
-
-active_clients["CONTRAGENTID"] = active_clients["CONTRAGENTID"].astype(str).str.strip()
-income_data["CONTRAGENTID"] = income_data["CONTRAGENTID"].astype(str).str.strip()
-
-
-# -----------------------------
-# 2. Спочатку агрегуємо income_data на рівні CONTRAGENTID
-# -----------------------------
-
-income_by_contragent = (
-    income_data
-    .groupby("CONTRAGENTID", as_index=False)
-    .agg({
-        "INCOME_LIABILITIES": "sum",
-        "INCOME_ASSETS": "sum",
-        "COMMISSIONS": "sum",
-        "MONTHLY_INCOME": "sum"
-    })
-)
-
-
-# -----------------------------
-# 3. Мержимо active_clients з income
-# -----------------------------
-
-test_clients = active_clients.merge(
-    income_by_contragent,
-    how="left",
-    on="CONTRAGENTID",
-    validate="m:1"
-)
-
-
-# -----------------------------
-# 4. Агрегуємо до одного рядка на IDENTIFYCODE
-# -----------------------------
-
-test_clients_agg = (
-    test_clients
-    .groupby("IDENTIFYCODE", as_index=False)
-    .agg({
-        "CONTRAGENTID": lambda x: ",".join(sorted(x.dropna().astype(str).unique())),
-        "INCOME_LIABILITIES": "sum",
-        "INCOME_ASSETS": "sum",
-        "COMMISSIONS": "sum",
-        "MONTHLY_INCOME": "sum"
-    })
-)
-
-
-# -----------------------------
-# 5. Безпечний merge у df
-# -----------------------------
-
-df_check = df.merge(
-    test_clients_agg,
-    how="left",
-    on="IDENTIFYCODE",
-    validate="m:1"
-)
-
-print("df rows:", len(df))
-print("df_check rows:", len(df_check))
-print("duplicated IDENTIFYCODE in right table:", test_clients_agg["IDENTIFYCODE"].duplicated().sum())
-
-
-
+    
+    # Робимо прогноз
+    # predictions = predictor.predict(new_data)
+    # print("Прогнозований прибуток:", predictions)
