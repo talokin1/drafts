@@ -1,35 +1,8 @@
 import joblib
-
-print("Збереження пайплайну...")
-
-# Пакуємо обидві моделі та всі важливі константи в один словник
-model_artifact = {
-    "classifier": clf,
-    "regressor": reg,
-    "best_threshold": best_threshold, # Знайдений оптимальний поріг
-    "global_cap": global_cap          # Знайдений ліміт для викидів
-}
-
-# Зберігаємо словник у файл
-joblib.dump(model_artifact, "two_stage_income_model.pkl")
-
-print("Модель успішно збережено у 'two_stage_income_model.pkl'")
-
-
-
-
-import joblib
 import numpy as np
 import pandas as pd
 
 def predict_potential_income(X_new, model_path="two_stage_income_model.pkl"):
-    """
-    Виконує передбачення потенційного доходу на основі збереженої Two-Stage моделі.
-    
-    X_new: pd.DataFrame з новими клієнтами. 
-           ВАЖЛИВО: Назви колонок та їх типи мають повністю співпадати з X_train.
-    """
-    
     # 1. Завантаження артефакту
     artifact = joblib.load(model_path)
     clf = artifact["classifier"]
@@ -37,8 +10,21 @@ def predict_potential_income(X_new, model_path="two_stage_income_model.pkl"):
     best_threshold = artifact["best_threshold"]
     global_cap = artifact["global_cap"]
     
+    # ==========================================
+    # КРОК 1.5: ФІЛЬТРАЦІЯ ТА ВИРІВНЮВАННЯ ФІЧ (ВИПРАВЛЕННЯ ПОМИЛКИ)
+    # ==========================================
+    # Дістаємо назви 165 колонок, на яких вчився класифікатор
+    expected_features = clf.feature_name_
+    
+    # Перевіряємо, чи раптом не бракує якихось важливих колонок у нових даних
+    missing_cols = set(expected_features) - set(X_new.columns)
+    if missing_cols:
+        raise ValueError(f"У нових даних бракує необхідних колонок: {missing_cols}")
+        
+    # Відсікаємо зайві колонки (залишаємо 165 з 503) і ставимо їх у правильному порядку!
+    X_new = X_new[expected_features].copy()
+
     # Перевірка, чи всі категоріальні фічі мають тип "category"
-    # LightGBM вимагає цього для коректної роботи
     cat_cols = clf.booster_.pandas_categorical
     if cat_cols is not None:
         for c in cat_cols[0]:
@@ -48,34 +34,19 @@ def predict_potential_income(X_new, model_path="two_stage_income_model.pkl"):
     # ==========================================
     # 2. STAGE 1: Класифікація (Активний / Неактивний)
     # ==========================================
-    # Отримуємо ймовірність класу 1 (активний)
     prob_active = clf.predict_proba(X_new)[:, 1]
-    
-    # Визначаємо, чи пройшов клієнт бар'єр
     is_active_pred = (prob_active >= best_threshold).astype(int)
 
     # ==========================================
     # 3. STAGE 2: Регресія (Оцінка прибутку)
     # ==========================================
-    # Регресор робить прогноз для всіх (у логарифмічній шкалі)
     reg_preds_log = reg.predict(X_new)
-    
-    # Повертаємо з логарифма (експоненціюємо)
     reg_preds = np.expm1(reg_preds_log)
-    
-    # Обрізаємо від'ємні значення та гігантські викиди по кепу з трейну
     reg_preds_capped = np.clip(reg_preds, 0, global_cap)
 
     # ==========================================
-    # 4. ОБ'ЄДНАННЯ (Згідно з твоєю логікою)
+    # 4. ОБ'ЄДНАННЯ
     # ==========================================
-    # Якщо is_active_pred == 0, дохід множиться на 0.
-    # Якщо is_active_pred == 1, беремо повний прогноз регресора.
     final_predictions = is_active_pred * reg_preds_capped
     
     return final_predictions
-
-# Приклад використання:
-# df_new = pd.read_csv("new_clients.csv")
-# predictions = predict_potential_income(df_new)
-# df_new["predicted_income"] = predictions
