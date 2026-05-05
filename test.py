@@ -1,138 +1,184 @@
-import numpy as np
-import pandas as pd
-import joblib
-
-
-def get_model_group(segment):
-    if str(segment).upper() == "LARGE":
-        return "LARGE"
-    return "MICRO_SMALL"
-
-
-def predict_potential_income(
-    X_new,
-    segment_new=None,
-    model_path=r"C:\Projects\(DS-450) Corp potential income\scripts\models\pickle_models\Assets_bucket_ev_model.pkl"
-):
+def make_bucket_values(y_train, bucket_train):
     """
-    Інференс для Segmented Bucket Expected Value Model.
-
-    Parameters
-    ----------
-    X_new : pd.DataFrame
-        Датафрейм з фічами для моделі.
-        Має містити ті самі колонки, що були при навчанні.
-
-    segment_new : pd.Series або None
-        Сегмент клієнта: MICRO / SMALL / LARGE.
-        Якщо None, функція спробує взяти сегмент із X_new["FIRM_TYPE"].
-
-    model_path : str
-        Шлях до збереженої моделі.
-
-    Returns
-    -------
-    np.array
-        Предикти потенційного прибутку.
+    Консервативне значення bucket-а.
+    Для positive bucket беремо не median, а 25-й перцентиль.
+    Це зменшує завищення.
     """
+    values = {}
 
-    artifact = joblib.load(model_path)
+    all_buckets = sorted(bucket_train.unique())
 
-    features = artifact["features"]
-    cat_cols = artifact["cat_cols"]
-    cat_values = artifact["cat_values"]
-    groups = artifact["groups"]
-
-    # =========================
-    # CHECK FEATURES
-    # =========================
-
-    missing_cols = set(features) - set(X_new.columns)
-
-    if missing_cols:
-        raise ValueError(f"У нових даних бракує необхідних колонок: {missing_cols}")
-
-    X_new = X_new[features].copy()
-
-    # =========================
-    # GET SEGMENTS
-    # =========================
-
-    if segment_new is None:
-        if "FIRM_TYPE" in X_new.columns:
-            segment_new = X_new["FIRM_TYPE"]
+    for b in all_buckets:
+        if b == 0:
+            values[int(b)] = 0.0
         else:
-            raise ValueError(
-                "segment_new не передано, і в X_new немає колонки FIRM_TYPE"
-            )
+            vals = y_train[bucket_train == b]
+            if len(vals) == 0:
+                values[int(b)] = 0.0
+            else:
+                values[int(b)] = float(np.quantile(vals, 0.25))
 
+    return values
+
+
+bucket_medians = make_bucket_values(y_train, bucket_train)
+
+
+
+
+
+
+
+
+
+
+
+
+pred_raw = np.zeros(len(X_part))
+positive_proba = np.zeros(len(X_part))
+
+for i, cls in enumerate(classes):
+    cls_int = int(cls)
+
+    if cls_int != 0:
+        positive_proba += proba[:, i]
+
+    pred_raw += proba[:, i] * medians.get(cls_int, 0.0)
+
+# якщо модель не впевнена, що клієнт активний — ставимо 0
+pred_raw = np.where(
+    positive_proba >= MIN_POSITIVE_PROBA,
+    pred_raw,
+    0
+)
+
+pred_raw = pd.Series(pred_raw, index=X_part.index)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def predict_bucket_model(model_pack, X_new, segment_new, min_positive_proba=0.35):
+    X_new = X_new.copy()
     segment_new = pd.Series(segment_new, index=X_new.index).astype(str)
 
-    # =========================
-    # CATEGORICAL PREP
-    # =========================
+    preds = pd.Series(0.0, index=X_new.index)
 
-    for c in cat_cols:
-        if c in X_new.columns:
-            X_new[c] = pd.Categorical(
-                X_new[c],
-                categories=cat_values[c]
-            )
-
-    # =========================
-    # PREDICT
-    # =========================
-
-    final_predictions = pd.Series(0.0, index=X_new.index)
-
-    model_groups = segment_new.apply(get_model_group)
-
-    for group_name, pack in groups.items():
-        group_mask = model_groups == group_name
+    for group_name, pack in model_pack["groups"].items():
+        group_mask = segment_new.apply(get_model_group) == group_name
 
         if group_mask.sum() == 0:
             continue
 
-        X_part = X_new.loc[group_mask].copy()
-        segment_part = segment_new.loc[group_mask]
+        X_part = X_new.loc[group_mask, model_pack["features"]].copy()
+
+        for c in model_pack["cat_cols"]:
+            X_part[c] = pd.Categorical(
+                X_part[c],
+                categories=model_pack["cat_values"][c]
+            )
 
         model = pack["model"]
-        bucket_medians = pack["bucket_medians"]
-        calibration_factors = pack["calibration_factors"]
-        segment_caps = pack["segment_caps"]
+        bucket_values = pack["bucket_medians"]
 
         proba = model.predict_proba(X_part)
         classes = model.classes_
 
-        pred = np.zeros(len(X_part))
+        pred_raw = np.zeros(len(X_part))
+        positive_proba = np.zeros(len(X_part))
 
         for i, cls in enumerate(classes):
-            pred += proba[:, i] * bucket_medians.get(int(cls), 0.0)
+            cls_int = int(cls)
 
-        pred = pd.Series(pred, index=X_part.index)
+            if cls_int != 0:
+                positive_proba += proba[:, i]
 
-        # segment-level calibration + caps
-        for seg in segment_part.unique():
-            seg_mask = segment_part == seg
+            pred_raw += proba[:, i] * bucket_values.get(cls_int, 0.0)
 
-            factor = calibration_factors.get(seg, 1.0)
-            cap = segment_caps.get(seg, np.inf)
+        # zero-gate
+        pred_raw = np.where(
+            positive_proba >= min_positive_proba,
+            pred_raw,
+            0
+        )
 
-            pred.loc[seg_mask] = pred.loc[seg_mask] * factor
-            pred.loc[seg_mask] = np.clip(pred.loc[seg_mask], 0, cap)
+        pred_raw = pd.Series(pred_raw, index=X_part.index)
 
-        final_predictions.loc[group_mask] = pred
+        # segment-level calibration + cap
+        for seg in segment_new.loc[group_mask].unique():
+            seg_mask = segment_new.loc[group_mask] == seg
 
-    final_predictions = np.clip(final_predictions.values, 0, None)
+            factor = pack["calibration_factors"].get(seg, 1.0)
+            cap = pack["segment_caps"].get(seg, np.inf)
 
-    return final_predictions
+            pred_raw.loc[seg_mask] = pred_raw.loc[seg_mask] * factor
+            pred_raw.loc[seg_mask] = np.clip(pred_raw.loc[seg_mask], 0, cap)
+
+        preds.loc[group_mask] = pred_raw
+
+    return preds.values
+
+
 
 
 predictions = predict_potential_income(
     X_new=df,
     segment_new=df["FIRM_TYPE"],
-    model_path=r"C:\Projects\(DS-450) Corp potential income\scripts\models\pickle_models\Assets_bucket_ev_model.pkl"
+    model_path=r"C:\Projects\(DS-450) Corp potential income\scripts\models\pickle_models\Assets_bucket_ev_model.pkl",
+    min_positive_proba=0.35
 )
 
-df_result = df.copy()
-df_result["ASSETS_POTENTIAL"] = predictions
+df["ASSETS_POTENTIAL"] = predictions
+
+
+
+min_positive_proba=0.35
+
+
+
+
+
+
+
+
+
+
+
+pred = np.zeros(len(X_part))
+positive_proba = np.zeros(len(X_part))
+
+for i, cls in enumerate(classes):
+    cls_int = int(cls)
+
+    if cls_int != 0:
+        positive_proba += proba[:, i]
+
+    pred += proba[:, i] * bucket_medians.get(cls_int, 0.0)
+
+pred = np.where(
+    positive_proba >= min_positive_proba,
+    pred,
+    0
+)
+
+
+
+
+
+
+
+
+
+
+
