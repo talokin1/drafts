@@ -1,69 +1,107 @@
-# ============================================================
-# STAGE 2: ACTIVE CLIENT BUCKET MODEL - STABLE VERSION
-# ============================================================
+import joblib
+import numpy as np
+import pandas as pd
 
-BUCKET_QUANTILES = [0.00, 0.25, 0.50, 0.70, 0.85, 0.95, 1.00]
 
-bucket_edges = make_bucket_edges(y_train_active, BUCKET_QUANTILES)
-n_buckets = len(bucket_edges) - 1
+class AssetsPotentialModel:
+    def __init__(self, model_package):
+        self.pkg = model_package
 
-y_train_bucket = assign_buckets(y_train_active, bucket_edges)
-y_val_bucket = assign_buckets(y_val_active, bucket_edges)
-y_test_bucket = assign_buckets(y_test_active, bucket_edges)
+        self.feature_cols = model_package["feature_cols"]
+        self.cat_cols = model_package["cat_cols"]
+        self.cat_values = model_package["cat_values"]
+        self.removed_corr_features = model_package.get("removed_corr_features", [])
 
-bucket_values = calculate_bucket_values(
-    y_train_active=y_train_active,
-    y_train_bucket=y_train_bucket,
-    n_buckets=n_buckets
-)
+        self.active_classifier = model_package["active_classifier"]
+        self.bucket_classifier = model_package["bucket_classifier"]
+        self.bucket_values = model_package["bucket_values"]
 
-bucket_table = pd.DataFrame({
-    "bucket": np.arange(n_buckets),
-    "left_edge": bucket_edges[:-1],
-    "right_edge": bucket_edges[1:],
-    "bucket_value": bucket_values
-})
+        self.tail_regressor = model_package.get("tail_regressor", None)
+        self.tail_cap = model_package.get("tail_cap", None)
 
-display(bucket_table)
+        self.threshold = model_package["best_active_probability_threshold"]
 
-bucket_clf = lgb.LGBMClassifier(
-    objective="multiclass",
-    num_class=n_buckets,
+    def prepare_X(self, df):
+        X_inf = df.copy()
 
-    n_estimators=1200,
-    learning_rate=0.03,
+        X_inf = X_inf.drop(columns=self.removed_corr_features, errors="ignore")
 
-    num_leaves=7,
-    max_depth=3,
-    min_child_samples=80,
+        for col in self.feature_cols:
+            if col not in X_inf.columns:
+                X_inf[col] = np.nan
 
-    subsample=0.8,
-    colsample_bytree=0.7,
+        X_inf = X_inf[self.feature_cols].copy()
 
-    reg_alpha=3.0,
-    reg_lambda=15.0,
+        for c in self.cat_cols:
+            X_inf[c] = pd.Categorical(
+                X_inf[c],
+                categories=self.cat_values[c]
+            )
 
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-    verbosity=-1
-)
+        return X_inf
 
-bucket_clf.fit(
-    X_train_active,
-    y_train_bucket,
-    eval_set=[(X_val_active, y_val_bucket)],
-    eval_metric="multi_logloss",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=100, verbose=False)
-    ]
-)
+    def predict(self, df, return_details=False):
+        X_inf = self.prepare_X(df)
 
-bucket_pred_val_active = bucket_clf.predict(X_val_active)
-bucket_pred_test_active = bucket_clf.predict(X_test_active)
+        active_prob = self.active_classifier.predict_proba(X_inf)[:, 1]
 
-print("Bucket classification report, VAL active clients:")
-print(classification_report(y_val_bucket, bucket_pred_val_active, zero_division=0))
+        bucket_proba = self.bucket_classifier.predict_proba(X_inf)
+        bucket_idx = np.argmax(bucket_proba, axis=1)
 
-print("Bucket classification report, TEST active clients:")
-print(classification_report(y_test_bucket, bucket_pred_test_active, zero_division=0))
+        amount_pred = bucket_proba @ self.bucket_values
+
+        if self.tail_regressor is not None:
+            top_bucket = len(self.bucket_values) - 1
+            top_mask = bucket_idx == top_bucket
+
+            if top_mask.sum() > 0:
+                tail_pred = np.expm1(
+                    self.tail_regressor.predict(X_inf.loc[top_mask])
+                )
+                tail_pred = np.clip(tail_pred, 0, self.tail_cap)
+
+                amount_pred[top_mask] = (
+                    0.5 * amount_pred[top_mask]
+                    + 0.5 * tail_pred
+                )
+
+        final_pred = np.where(
+            active_prob >= self.threshold,
+            amount_pred,
+            0
+        )
+
+        final_pred = np.clip(final_pred, 0, None)
+
+        if not return_details:
+            return final_pred
+
+        return pd.DataFrame({
+            "ASSETS_POTENTIAL": final_pred,
+            "ASSETS_ACTIVE_PROB": active_prob,
+            "ASSETS_BUCKET": bucket_idx,
+            "ASSETS_IS_ACTIVE_PRED": (
+                active_prob >= self.threshold
+            ).astype(int)
+        }, index=df.index)
+    
+
+model_package = joblib.load(r"C:\Projects\DS-450\assets_potential_bucket_model.joblib")
+
+assets_model = AssetsPotentialModel(model_package)
+
+pred_details = assets_model.predict(df, return_details=True)
+
+df["ASSETS_POTENTIAL"] = pred_details["ASSETS_POTENTIAL"]
+df["ASSETS_ACTIVE_PROB"] = pred_details["ASSETS_ACTIVE_PROB"]
+df["ASSETS_BUCKET"] = pred_details["ASSETS_BUCKET"]
+df["ASSETS_IS_ACTIVE_PRED"] = pred_details["ASSETS_IS_ACTIVE_PRED"]
+
+df[[
+    "ASSETS_POTENTIAL",
+    "ASSETS_ACTIVE_PROB",
+    "ASSETS_BUCKET",
+    "ASSETS_IS_ACTIVE_PRED"
+]].head()
+
+df["ASSETS_POTENTIAL"] = assets_model.predict(df, return_details=False)
