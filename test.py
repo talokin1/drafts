@@ -1,52 +1,25 @@
-import joblib
-import numpy as np
-import pandas as pd
+df_check = pd.DataFrame({
+    "y_true": y_inference_true,
+    "y_pred": y_inference_pred,
+    "segment": inference_df["FIRM_TYPE"]
+})
 
-def predict_potential_income(X_new, model_path="two_stage_income_model.pkl"):
-    # 1. Завантаження артефакту
-    artifact = joblib.load(model_path)
-    clf = artifact["classifier"]
-    reg = artifact["regressor"]
-    best_threshold = artifact["best_threshold"]
-    global_cap = artifact["global_cap"]
-    
-    # ==========================================
-    # КРОК 1.5: ФІЛЬТРАЦІЯ ТА ВИРІВНЮВАННЯ ФІЧ (ВИПРАВЛЕННЯ ПОМИЛКИ)
-    # ==========================================
-    # Дістаємо назви 165 колонок, на яких вчився класифікатор
-    expected_features = clf.feature_name_
-    
-    # Перевіряємо, чи раптом не бракує якихось важливих колонок у нових даних
-    missing_cols = set(expected_features) - set(X_new.columns)
-    if missing_cols:
-        raise ValueError(f"У нових даних бракує необхідних колонок: {missing_cols}")
-        
-    # Відсікаємо зайві колонки (залишаємо 165 з 503) і ставимо їх у правильному порядку!
-    X_new = X_new[expected_features].copy()
+df_check["abs_error"] = np.abs(df_check["y_true"] - df_check["y_pred"])
+df_check["ratio"] = df_check["y_pred"] / df_check["y_true"].replace(0, np.nan)
 
-    # Перевірка, чи всі категоріальні фічі мають тип "category"
-    cat_cols = clf.booster_.pandas_categorical
-    if cat_cols is not None:
-        for c in cat_cols[0]:
-            if c in X_new.columns:
-                X_new[c] = X_new[c].astype("category")
+summary = df_check.groupby("segment").agg(
+    count=("y_true", "size"),
+    true_sum=("y_true", "sum"),
+    pred_sum=("y_pred", "sum"),
+    true_mean=("y_true", "mean"),
+    pred_mean=("y_pred", "mean"),
+    mae=("abs_error", "mean"),
+    median_true=("y_true", "median"),
+    median_pred=("y_pred", "median"),
+    zero_true_rate=("y_true", lambda x: (x == 0).mean()),
+    zero_pred_rate=("y_pred", lambda x: (x == 0).mean()),
+)
 
-    # ==========================================
-    # 2. STAGE 1: Класифікація (Активний / Неактивний)
-    # ==========================================
-    prob_active = clf.predict_proba(X_new)[:, 1]
-    is_active_pred = (prob_active >= best_threshold).astype(int)
+summary["sum_ratio"] = summary["pred_sum"] / summary["true_sum"]
 
-    # ==========================================
-    # 3. STAGE 2: Регресія (Оцінка прибутку)
-    # ==========================================
-    reg_preds_log = reg.predict(X_new)
-    reg_preds = np.expm1(reg_preds_log)
-    reg_preds_capped = np.clip(reg_preds, 0, global_cap)
-
-    # ==========================================
-    # 4. ОБ'ЄДНАННЯ
-    # ==========================================
-    final_predictions = is_active_pred * reg_preds_capped
-    
-    return final_predictions
+summary
