@@ -1,135 +1,175 @@
-print("Навчання Stage 2: Conservative Regressor...")
+import argparse
+import csv
+import io
+import logging
+from typing import Dict, Iterator, List
 
-# ============================================================
-# ACTIVE MASKS
-# ============================================================
-
-mask_train_active = (y_train_raw >= THRESHOLD).values
-mask_val_active = (y_val_raw >= THRESHOLD).values
-
-X_train_reg = X_train[mask_train_active].copy()
-X_val_reg = X_val[mask_val_active].copy()
-
-y_train_reg_raw = y_train_raw[mask_train_active].copy()
-y_val_reg_raw = y_val_raw[mask_val_active].copy()
+from parser import FLAT_COMPANY_FIELDS, parse_company_html
+from proxy_manager import ProxyManager
+from requester import CompanyRequester, RequestConfig
 
 
-# ============================================================
-# TARGET CAP — тільки по train, без leakage
-# ============================================================
-
-REG_TARGET_CAP_Q = 0.97
-
-target_cap = np.quantile(y_train_reg_raw, REG_TARGET_CAP_Q)
-
-print(f"Regression target cap q={REG_TARGET_CAP_Q}: {target_cap:,.2f}")
-
-y_train_reg_capped = np.clip(y_train_reg_raw, 0, target_cap)
-y_val_reg_capped = np.clip(y_val_reg_raw, 0, target_cap)
-
-y_train_reg_log = np.log1p(y_train_reg_capped)
-y_val_reg_log = np.log1p(y_val_reg_capped)
+LOGGER = logging.getLogger(__name__)
 
 
-# ============================================================
-# SAMPLE WEIGHTS
-# Менше ваги великим клієнтам, щоб модель не вчилася тільки на хвості
-# ============================================================
-
-sample_weight_reg = 1 / np.sqrt(1 + y_train_reg_capped)
-sample_weight_reg = sample_weight_reg / sample_weight_reg.mean()
-
-
-# ============================================================
-# CONSERVATIVE REGRESSOR
-# ============================================================
-
-reg = lgb.LGBMRegressor(
-    objective="regression_l1",
-    metric="mae",
-
-    n_estimators=3000,
-    learning_rate=0.02,
-
-    num_leaves=15,
-    max_depth=4,
-    min_child_samples=100,
-
-    subsample=0.75,
-    colsample_bytree=0.75,
-
-    reg_alpha=5.0,
-    reg_lambda=20.0,
-
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
-
-reg.fit(
-    X_train_reg,
-    y_train_reg_log,
-    sample_weight=sample_weight_reg,
-    eval_set=[(X_val_reg, y_val_reg_log)],
-    eval_metric="mae",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(stopping_rounds=200, verbose=False)
-    ]
-)
+def configure_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)-7s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
 
 
-# ============================================================
-# REGRESSION DIAGNOSTICS ON ACTIVE CLIENTS
-# ============================================================
+def iter_edrpou_codes(csv_path: str) -> Iterator[str]:
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+        sample = handle.read(2048)
+        handle.seek(0)
+        try:
+            has_header = csv.Sniffer().has_header(sample)
+        except (csv.Error, ValueError):
+            first_line = sample.splitlines()[0] if sample.splitlines() else ""
+            has_header = any(ch.isalpha() for ch in first_line)
+        if has_header:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                code = (
+                    row.get("edrpou")
+                    or row.get("EDRPOU")
+                    or row.get("EDRPOU_CODE")
+                    or row.get("code")
+                    or row.get("Code")
+                    or next(iter(row.values()), "")
+                )
+                normalized = "".join(ch for ch in str(code) if ch.isdigit())
+                if normalized:
+                    yield normalized
+        else:
+            reader = csv.reader(handle)
+            for row in reader:
+                if not row:
+                    continue
+                normalized = "".join(ch for ch in row[0] if ch.isdigit())
+                if normalized:
+                    yield normalized
 
-train_reg_pred_log = reg.predict(X_train_reg)
-val_reg_pred_log = reg.predict(X_val_reg)
 
-train_reg_pred = np.expm1(train_reg_pred_log)
-val_reg_pred = np.expm1(val_reg_pred_log)
+def coerce_record(record: Dict[str, object]) -> Dict[str, str]:
+    flat_record: Dict[str, str] = {}
+    for field in FLAT_COMPANY_FIELDS:
+        flat_record[field] = str(record.get(field, "") or "")
+    return flat_record
 
-train_reg_pred = np.clip(train_reg_pred, 0, target_cap)
-val_reg_pred = np.clip(val_reg_pred, 0, target_cap)
 
-print("=" * 70)
-print("[Stage 2: Conservative Regressor, ACTIVE ONLY]")
-print("=" * 70)
+def flush_rows(output_path: str, rows: List[Dict[str, str]], write_header: bool) -> bool:
+    if not rows:
+        return write_header
+    mode = "w" if write_header else "a"
+    with open(output_path, mode, encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FLAT_COMPANY_FIELDS)
+        if write_header:
+            writer.writeheader()
+            write_header = False
+        writer.writerows(rows)
+    return write_header
 
-print("[LOG SPACE]")
-print(
-    f"MAE    | Train: {mean_absolute_error(np.log1p(y_train_reg_raw), np.log1p(train_reg_pred)):.4f} "
-    f"| Val: {mean_absolute_error(np.log1p(y_val_reg_raw), np.log1p(val_reg_pred)):.4f}"
-)
-print(
-    f"MedAE  | Train: {median_absolute_error(np.log1p(y_train_reg_raw), np.log1p(train_reg_pred)):.4f} "
-    f"| Val: {median_absolute_error(np.log1p(y_val_reg_raw), np.log1p(val_reg_pred)):.4f}"
-)
-print(
-    f"R2     | Train: {r2_score(np.log1p(y_train_reg_raw), np.log1p(train_reg_pred)):.4f} "
-    f"| Val: {r2_score(np.log1p(y_val_reg_raw), np.log1p(val_reg_pred)):.4f}"
-)
 
-print("-" * 70)
-print("[ORIGINAL SPACE]")
-print(
-    f"MAE    | Train: {mean_absolute_error(y_train_reg_raw, train_reg_pred):,.2f} "
-    f"| Val: {mean_absolute_error(y_val_reg_raw, val_reg_pred):,.2f}"
-)
-print(
-    f"MedAE  | Train: {median_absolute_error(y_train_reg_raw, train_reg_pred):,.2f} "
-    f"| Val: {median_absolute_error(y_val_reg_raw, val_reg_pred):,.2f}"
-)
-print(
-    f"R2     | Train: {r2_score(y_train_reg_raw, train_reg_pred):.4f} "
-    f"| Val: {r2_score(y_val_reg_raw, val_reg_pred):.4f}"
-)
+def format_preview(rows: List[Dict[str, str]], limit: int) -> str:
+    preview_rows = rows[:limit]
+    if not preview_rows:
+        return "No parsed rows to preview."
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=FLAT_COMPANY_FIELDS)
+    writer.writeheader()
+    writer.writerows(preview_rows)
+    return buffer.getvalue().strip()
 
-print("-" * 70)
-print(f"Real active total train: {y_train_reg_raw.sum():,.2f}")
-print(f"Pred active total train: {train_reg_pred.sum():,.2f}")
-print(f"Ratio train            : {train_reg_pred.sum() / y_train_reg_raw.sum():.4f}")
 
-print(f"Real active total val  : {y_val_reg_raw.sum():,.2f}")
-print(f"Pred active total val  : {val_reg_pred.sum():,.2f}")
-print(f"Ratio val              : {val_reg_pred.sum() / y_val_reg_raw.sum():.4f}")
-print("=" * 70)
+def build_requester(args: argparse.Namespace) -> CompanyRequester:
+    proxy_manager = ProxyManager.from_file(
+        args.proxy_file,
+        max_failures=args.proxy_max_failures,
+    )
+    config = RequestConfig(
+        timeout_seconds=args.timeout,
+        max_attempts=args.max_attempts,
+        backoff_base_seconds=args.backoff_base,
+        backoff_jitter_seconds=args.backoff_jitter,
+        short_delay_range=(args.short_delay_min, args.short_delay_max),
+        long_delay_range=(args.long_delay_min, args.long_delay_max),
+        long_delay_every=args.long_delay_every,
+    )
+    return CompanyRequester(config=config, proxy_manager=proxy_manager)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fetch and parse YouControl company pages.")
+    parser.add_argument("--input", required=True, help="Path to input CSV with EDRPOU codes.")
+    parser.add_argument("--output", default="company_results.csv", help="Path to output CSV.")
+    parser.add_argument("--proxy-file", default=None, help="Optional proxy list file.")
+    parser.add_argument("--proxy-max-failures", type=int, default=3, help="Disable proxy after this many failures.")
+    parser.add_argument("--batch-size", type=int, default=20, help="Flush rows every N parsed companies.")
+    parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
+    parser.add_argument("--max-attempts", type=int, default=4, help="Max fetch attempts per company.")
+    parser.add_argument("--backoff-base", type=float, default=2.0, help="Backoff base.")
+    parser.add_argument("--backoff-jitter", type=float, default=1.0, help="Backoff jitter ceiling.")
+    parser.add_argument("--short-delay-min", type=float, default=1.0, help="Minimum short delay.")
+    parser.add_argument("--short-delay-max", type=float, default=3.0, help="Maximum short delay.")
+    parser.add_argument("--long-delay-min", type=float, default=5.0, help="Minimum occasional long delay.")
+    parser.add_argument("--long-delay-max", type=float, default=15.0, help="Maximum occasional long delay.")
+    parser.add_argument("--long-delay-every", type=int, default=7, help="Apply long delay every N requests.")
+    parser.add_argument("--log-level", default="INFO", help="Logging level.")
+    parser.add_argument("--preview-rows", type=int, default=5, help="How many parsed rows to print at the end.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    configure_logging(args.log_level)
+
+    requester = build_requester(args)
+    pending_rows: List[Dict[str, str]] = []
+    preview_rows: List[Dict[str, str]] = []
+    write_header = True
+
+    LOGGER.info(
+        "Started: input=%s output=%s proxy_file=%s",
+        args.input,
+        args.output,
+        args.proxy_file or "none",
+    )
+
+    for index, edrpou in enumerate(iter_edrpou_codes(args.input), start=1):
+        LOGGER.info("Processing #%s: EDRPOU %s", index, edrpou)
+        html = requester.fetch_company_page(edrpou)
+        if not html:
+            LOGGER.warning("Skipped #%s: EDRPOU %s (no HTML returned)", index, edrpou)
+            continue
+
+        record = coerce_record(parse_company_html(html, edrpou=edrpou))
+        pending_rows.append(record)
+        LOGGER.info(
+            "Parsed #%s: EDRPOU %s -> %s",
+            index,
+            edrpou,
+            record.get("company_name") or "company name not found",
+        )
+
+        if len(preview_rows) < args.preview_rows:
+            preview_rows.append(record)
+
+        if len(pending_rows) >= args.batch_size:
+            write_header = flush_rows(args.output, pending_rows, write_header)
+            LOGGER.info("Saved batch: %s rows -> %s", args.batch_size, args.output)
+            pending_rows.clear()
+
+    remaining_rows = len(pending_rows)
+    flush_rows(args.output, pending_rows, write_header)
+    if remaining_rows:
+        LOGGER.info("Saved final batch: %s rows -> %s", remaining_rows, args.output)
+    LOGGER.info("Completed: output=%s", args.output)
+    print(format_preview(preview_rows, args.preview_rows))
+
+
+if __name__ == "__main__":
+    main()
