@@ -1,231 +1,325 @@
-import os
-import json
 import pandas as pd
-from collections import defaultdict, Counter
-from tqdm import tqdm
-
-PATH = r"M:\Controlling\Data_Science_Projects\Corp_Churn\Data\Raw"
-
-MFO_OTP = 300528
-
-transaction_files = [
-    os.path.join(PATH, file)
-    for file in os.listdir(PATH)
-    if "data_trxs_2026_" in file and file.endswith(".parquet")
-]
-
-# Якщо треба додати ще 2025_11, 2025_12 тощо:
-# transaction_files += [
-#     os.path.join(PATH, file)
-#     for file in os.listdir(PATH)
-#     if "data_trxs_2025_" in file and file.endswith(".parquet")
-# ]
-
-
-
-sample = sample.copy()
-
-sample["IDENTIFYCODE"] = (
-    sample["IDENTIFYCODE"]
-    .astype(str)
-    .str.strip()
-)
-
-sample_codes = set(sample["IDENTIFYCODE"])
-
-
-
-use_cols = [
-    "CONTRAGENTAIDENTIFYCODE",
-    "CONTRAGENTBIDENTIFYCODE",
-    "BANKAID",
-    "BANKBID",
-]
-
-
-# Структура:
-# bank_usage["12345678"][300528] = 15
-# bank_usage["12345678"][305299] = 3
-
-bank_usage = defaultdict(Counter)
-
-bank_usage_sender = defaultdict(Counter)
-bank_usage_receiver = defaultdict(Counter)
-
-for file in tqdm(transaction_files, desc="Processing transaction files"):
-    trx = pd.read_parquet(file, columns=use_cols)
-
-    trx["CONTRAGENTAIDENTIFYCODE"] = (
-        trx["CONTRAGENTAIDENTIFYCODE"]
-        .astype(str)
-        .str.strip()
-    )
-
-    trx["CONTRAGENTBIDENTIFYCODE"] = (
-        trx["CONTRAGENTBIDENTIFYCODE"]
-        .astype(str)
-        .str.strip()
-    )
-
-    # -------------------------
-    # Клієнт як відправник
-    # -------------------------
-    sender_part = trx[
-        trx["CONTRAGENTAIDENTIFYCODE"].isin(sample_codes)
-    ][["CONTRAGENTAIDENTIFYCODE", "BANKAID"]].copy()
-
-    sender_part = sender_part.dropna(subset=["BANKAID"])
-
-    sender_part["BANKAID"] = sender_part["BANKAID"].astype("Int64")
-
-    sender_counts = (
-        sender_part
-        .groupby(["CONTRAGENTAIDENTIFYCODE", "BANKAID"])
-        .size()
-        .reset_index(name="txn_cnt")
-    )
-
-    for row in sender_counts.itertuples(index=False):
-        client_code = row.CONTRAGENTAIDENTIFYCODE
-        bank_id = int(row.BANKAID)
-        cnt = int(row.txn_cnt)
-
-        bank_usage[client_code][bank_id] += cnt
-        bank_usage_sender[client_code][bank_id] += cnt
-
-    # -------------------------
-    # Клієнт як отримувач
-    # -------------------------
-    receiver_part = trx[
-        trx["CONTRAGENTBIDENTIFYCODE"].isin(sample_codes)
-    ][["CONTRAGENTBIDENTIFYCODE", "BANKBID"]].copy()
-
-    receiver_part = receiver_part.dropna(subset=["BANKBID"])
-
-    receiver_part["BANKBID"] = receiver_part["BANKBID"].astype("Int64")
-
-    receiver_counts = (
-        receiver_part
-        .groupby(["CONTRAGENTBIDENTIFYCODE", "BANKBID"])
-        .size()
-        .reset_index(name="txn_cnt")
-    )
-
-    for row in receiver_counts.itertuples(index=False):
-        client_code = row.CONTRAGENTBIDENTIFYCODE
-        bank_id = int(row.BANKBID)
-        cnt = int(row.txn_cnt)
-
-        bank_usage[client_code][bank_id] += cnt
-        bank_usage_receiver[client_code][bank_id] += cnt
-
-
-def make_bank_usage_json(counter: Counter):
-    """
-    Формує рейтинг банків клієнта у JSON-форматі.
-    """
-    if not counter:
-        return None
-
-    total = sum(counter.values())
-
-    result = []
-
-    for bank_id, cnt in counter.most_common():
-        result.append({
-            "bank_id": bank_id,
-            "txn_cnt": int(cnt),
-            "share": round(cnt / total, 4)
-        })
-
-    return json.dumps(result, ensure_ascii=False)
-
-
-def get_top_bank(counter: Counter):
-    if not counter:
-        return None
-    return counter.most_common(1)[0][0]
-
-
-def get_top_bank_count(counter: Counter):
-    if not counter:
-        return 0
-    return int(counter.most_common(1)[0][1])
-
-
-def get_top_bank_share(counter: Counter):
-    if not counter:
-        return 0
-
-    total = sum(counter.values())
-    top_cnt = counter.most_common(1)[0][1]
-
-    return round(top_cnt / total, 4)
-
-
-def get_banks_used_count(counter: Counter):
-    return len(counter)
-
-
-def get_total_txn_count(counter: Counter):
-    return int(sum(counter.values()))
-
-
-sample["BANK_USAGE_JSON"] = sample["IDENTIFYCODE"].map(
-    lambda x: make_bank_usage_json(bank_usage.get(x, Counter()))
-)
-
-sample["BANK_USAGE_SENDER_JSON"] = sample["IDENTIFYCODE"].map(
-    lambda x: make_bank_usage_json(bank_usage_sender.get(x, Counter()))
-)
-
-sample["BANK_USAGE_RECEIVER_JSON"] = sample["IDENTIFYCODE"].map(
-    lambda x: make_bank_usage_json(bank_usage_receiver.get(x, Counter()))
-)
-
-sample["TOP_BANK_ID"] = sample["IDENTIFYCODE"].map(
-    lambda x: get_top_bank(bank_usage.get(x, Counter()))
-)
-
-sample["TOP_BANK_TXN_CNT"] = sample["IDENTIFYCODE"].map(
-    lambda x: get_top_bank_count(bank_usage.get(x, Counter()))
-)
-
-sample["TOP_BANK_SHARE"] = sample["IDENTIFYCODE"].map(
-    lambda x: get_top_bank_share(bank_usage.get(x, Counter()))
-)
-
-sample["BANKS_USED_CNT"] = sample["IDENTIFYCODE"].map(
-    lambda x: get_banks_used_count(bank_usage.get(x, Counter()))
-)
-
-sample["TOTAL_BANK_TXN_CNT"] = sample["IDENTIFYCODE"].map(
-    lambda x: get_total_txn_count(bank_usage.get(x, Counter()))
-)
-
+import numpy as np
 
 # =========================
-# 6. Optional: flag OTP usage
+# 1. Налаштування
 # =========================
 
-sample["OTP_TXN_CNT"] = sample["IDENTIFYCODE"].map(
-    lambda x: int(bank_usage.get(x, Counter()).get(MFO_OTP, 0))
-)
+output_path = "final_clients_analysis.xlsx"
 
-sample["OTP_TXN_SHARE"] = sample.apply(
-    lambda row: round(row["OTP_TXN_CNT"] / row["TOTAL_BANK_TXN_CNT"], 4)
-    if row["TOTAL_BANK_TXN_CNT"] > 0 else 0,
-    axis=1
-)
+# Копія, щоб не змінювати original final
+df = final.copy()
 
-sample[[
+# =========================
+# 2. Логічний порядок колонок
+# =========================
+
+logical_order = [
+    # Основна інформація про підприємство
     "IDENTIFYCODE",
-    "TOP_BANK_ID",
-    "TOP_BANK_TXN_CNT",
-    "TOP_BANK_SHARE",
-    "BANKS_USED_CNT",
-    "TOTAL_BANK_TXN_CNT",
-    "OTP_TXN_CNT",
-    "OTP_TXN_SHARE",
-    "BANK_USAGE_JSON"
-]].head(20)
+    "FIRM_NAME",
+    "FIRM_TERR",
+    "KVED",
+    "KVED_DESCR",
+
+    # Фінансові показники
+    "REVENUE_CUR",
+    "NET_PROFIT_CUR",
+    "NB_EMPL",
+    "ФОП",
+
+    # Банківська інформація
+    "BANK_USED",
+
+    # Контактна інформація
+    "FIRM_RUK",
+    "FIRM_TELORG",
+]
+
+# Беремо тільки ті колонки, які реально є в таблиці
+logical_order = [col for col in logical_order if col in df.columns]
+
+df = df[logical_order]
+
+# =========================
+# 3. Перейменування колонок
+# =========================
+
+rename_dict = {
+    "IDENTIFYCODE": "ЄДРПОУ",
+    "FIRM_NAME": "Назва підприємства",
+    "FIRM_TERR": "Регіон",
+    "KVED": "КВЕД",
+    "KVED_DESCR": "Опис КВЕД",
+    "REVENUE_CUR": "Дохід, тис. грн",
+    "NET_PROFIT_CUR": "Чистий прибуток, тис. грн",
+    "NB_EMPL": "Кількість працівників",
+    "ФОП": "ФОП, тис. грн",
+    "BANK_USED": "Банк",
+    "FIRM_RUK": "Керівник",
+    "FIRM_TELORG": "Телефон",
+}
+
+df = df.rename(columns=rename_dict)
+
+# =========================
+# 4. Базова очистка
+# =========================
+
+# Порожні банки замінюємо на "Немає інформації"
+if "Банк" in df.columns:
+    df["Банк"] = df["Банк"].fillna("Немає інформації")
+    df["Банк"] = df["Банк"].replace("", "Немає інформації")
+
+if "КВЕД" in df.columns:
+    df["КВЕД"] = df["КВЕД"].astype(str).replace("nan", "Немає інформації")
+
+if "Опис КВЕД" in df.columns:
+    df["Опис КВЕД"] = df["Опис КВЕД"].fillna("Немає інформації")
+
+# Числові колонки
+num_cols = [
+    "Дохід, тис. грн",
+    "Чистий прибуток, тис. грн",
+    "Кількість працівників",
+    "ФОП, тис. грн",
+]
+
+for col in num_cols:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# =========================
+# 5. Зведення по банках
+# =========================
+
+bank_pivot = (
+    df
+    .groupby("Банк", dropna=False)
+    .agg(
+        Кількість_підприємств=("ЄДРПОУ", "count"),
+        Загальний_дохід_тис_грн=("Дохід, тис. грн", "sum"),
+        Середній_дохід_тис_грн=("Дохід, тис. грн", "mean"),
+        Загальний_чистий_прибуток_тис_грн=("Чистий прибуток, тис. грн", "sum"),
+        Середній_чистий_прибуток_тис_грн=("Чистий прибуток, тис. грн", "mean"),
+        Загальна_кількість_працівників=("Кількість працівників", "sum"),
+        Загальний_ФОП_тис_грн=("ФОП, тис. грн", "sum"),
+        Кількість_унікальних_КВЕДів=("КВЕД", "nunique"),
+    )
+    .reset_index()
+    .sort_values("Кількість_підприємств", ascending=False)
+)
+
+# Частка підприємств по банку
+bank_pivot["Частка_підприємств"] = (
+    bank_pivot["Кількість_підприємств"] / bank_pivot["Кількість_підприємств"].sum()
+)
+
+# =========================
+# 6. Зведення по КВЕДах
+# =========================
+
+kved_pivot = (
+    df
+    .groupby(["КВЕД", "Опис КВЕД"], dropna=False)
+    .agg(
+        Кількість_підприємств=("ЄДРПОУ", "count"),
+        Загальний_дохід_тис_грн=("Дохід, тис. грн", "sum"),
+        Середній_дохід_тис_грн=("Дохід, тис. грн", "mean"),
+        Загальний_чистий_прибуток_тис_грн=("Чистий прибуток, тис. грн", "sum"),
+        Середній_чистий_прибуток_тис_грн=("Чистий прибуток, тис. грн", "mean"),
+        Загальна_кількість_працівників=("Кількість працівників", "sum"),
+        Загальний_ФОП_тис_грн=("ФОП, тис. грн", "sum"),
+        Кількість_унікальних_банків=("Банк", "nunique"),
+    )
+    .reset_index()
+    .sort_values("Кількість_підприємств", ascending=False)
+)
+
+kved_pivot["Частка_підприємств"] = (
+    kved_pivot["Кількість_підприємств"] / kved_pivot["Кількість_підприємств"].sum()
+)
+
+# =========================
+# 7. Перетин Банк × КВЕД
+# =========================
+
+bank_kved_pivot = (
+    df
+    .groupby(["Банк", "КВЕД", "Опис КВЕД"], dropna=False)
+    .agg(
+        Кількість_підприємств=("ЄДРПОУ", "count"),
+        Загальний_дохід_тис_грн=("Дохід, тис. грн", "sum"),
+        Загальний_чистий_прибуток_тис_грн=("Чистий прибуток, тис. грн", "sum"),
+        Загальна_кількість_працівників=("Кількість працівників", "sum"),
+        Загальний_ФОП_тис_грн=("ФОП, тис. грн", "sum"),
+    )
+    .reset_index()
+    .sort_values(["Банк", "Кількість_підприємств"], ascending=[True, False])
+)
+
+# =========================
+# 8. Запис в Excel
+# =========================
+
+with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+    workbook = writer.book
+
+    # Основний лист
+    df.to_excel(writer, sheet_name="Дані", index=False)
+
+    # Зведення
+    sheet_name = "Зведення"
+    start_row = 0
+
+    worksheet_summary = workbook.add_worksheet(sheet_name)
+    writer.sheets[sheet_name] = worksheet_summary
+
+    # Формати
+    title_format = workbook.add_format({
+        "bold": True,
+        "font_size": 14,
+        "bg_color": "#D9EAF7",
+        "border": 1
+    })
+
+    header_format = workbook.add_format({
+        "bold": True,
+        "bg_color": "#BDD7EE",
+        "border": 1,
+        "text_wrap": True
+    })
+
+    number_format = workbook.add_format({
+        "num_format": "#,##0.0"
+    })
+
+    integer_format = workbook.add_format({
+        "num_format": "#,##0"
+    })
+
+    percent_format = workbook.add_format({
+        "num_format": "0.0%"
+    })
+
+    # --- Таблиця 1: по банках
+    worksheet_summary.write(start_row, 0, "Розподіл підприємств по банках", title_format)
+    start_row += 2
+
+    bank_pivot.to_excel(
+        writer,
+        sheet_name=sheet_name,
+        startrow=start_row,
+        startcol=0,
+        index=False
+    )
+
+    start_row += len(bank_pivot) + 4
+
+    # --- Таблиця 2: по КВЕДах
+    worksheet_summary.write(start_row, 0, "Розподіл підприємств по КВЕДах", title_format)
+    start_row += 2
+
+    kved_pivot.to_excel(
+        writer,
+        sheet_name=sheet_name,
+        startrow=start_row,
+        startcol=0,
+        index=False
+    )
+
+    start_row += len(kved_pivot) + 4
+
+    # --- Таблиця 3: Банк × КВЕД
+    worksheet_summary.write(start_row, 0, "Розподіл підприємств за перетином Банк × КВЕД", title_format)
+    start_row += 2
+
+    bank_kved_pivot.to_excel(
+        writer,
+        sheet_name=sheet_name,
+        startrow=start_row,
+        startcol=0,
+        index=False
+    )
+
+    # =========================
+    # 9. Форматування листа "Дані"
+    # =========================
+
+    worksheet_data = writer.sheets["Дані"]
+
+    worksheet_data.freeze_panes(1, 0)
+    worksheet_data.autofilter(0, 0, len(df), len(df.columns) - 1)
+
+    for col_num, col_name in enumerate(df.columns):
+        worksheet_data.write(0, col_num, col_name, header_format)
+
+        max_len = max(
+            df[col_name].astype(str).map(len).max(),
+            len(col_name)
+        )
+
+        width = min(max_len + 2, 45)
+        worksheet_data.set_column(col_num, col_num, width)
+
+    # Формати для числових колонок на листі "Дані"
+    for col_name in num_cols:
+        if col_name in df.columns:
+            col_idx = df.columns.get_loc(col_name)
+
+            if col_name == "Кількість працівників":
+                worksheet_data.set_column(col_idx, col_idx, 18, integer_format)
+            else:
+                worksheet_data.set_column(col_idx, col_idx, 20, number_format)
+
+    # =========================
+    # 10. Форматування листа "Зведення"
+    # =========================
+
+    worksheet_summary.freeze_panes(0, 0)
+
+    # Ширини колонок
+    worksheet_summary.set_column(0, 0, 28)
+    worksheet_summary.set_column(1, 1, 45)
+    worksheet_summary.set_column(2, 20, 20)
+
+    # Форматування заголовків таблиць на зведенні
+    for row in range(0, start_row + len(bank_kved_pivot) + 10):
+        # Проходимо тільки по потенційних header rows
+        pass
+
+    # Автоформатування заголовків через пошук рядків із назвами колонок
+    for table_start in [
+        2,
+        2 + len(bank_pivot) + 4,
+        2 + len(bank_pivot) + 4 + len(kved_pivot) + 4,
+    ]:
+        for col_num in range(0, 15):
+            worksheet_summary.write(
+                table_start,
+                col_num,
+                worksheet_summary.table.get if False else ""
+            )
+
+    # Простий варіант: повторно записуємо header-формат для кожної таблиці
+    bank_header_row = 2
+    kved_header_row = bank_header_row + len(bank_pivot) + 4
+    bank_kved_header_row = kved_header_row + len(kved_pivot) + 4
+
+    for col_num, col_name in enumerate(bank_pivot.columns):
+        worksheet_summary.write(bank_header_row, col_num, col_name, header_format)
+
+    for col_num, col_name in enumerate(kved_pivot.columns):
+        worksheet_summary.write(kved_header_row, col_num, col_name, header_format)
+
+    for col_num, col_name in enumerate(bank_kved_pivot.columns):
+        worksheet_summary.write(bank_kved_header_row, col_num, col_name, header_format)
+
+    # Формат відсотків
+    if "Частка_підприємств" in bank_pivot.columns:
+        col_idx = bank_pivot.columns.get_loc("Частка_підприємств")
+        worksheet_summary.set_column(col_idx, col_idx, 18, percent_format)
+
+    # Зберігається автоматично після виходу з with
+
+print(f"Excel-файл збережено: {output_path}")
