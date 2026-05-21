@@ -1,35 +1,54 @@
-Ліва частина — Problem / Pilot
-Проблема
-Частина клієнтів потрапляє в статус “недозвон”
-Номери телефонів із фінансової звітності ДІЇ часто:
-неактуальні
-некоректні
-недоступні
-Пілот
-Сформовано вибірку з 17 клієнтів зі статусом “недозвон”
-Для клієнтів проведено збір даних через YouControl
-Для більшості клієнтів знайдено альтернативні номери телефонів
-Отримані контакти передані бізнесу для повторного опрацювання
-Поточний статус
-Очікується фідбек від бізнесу щодо:
-успішності дозвону
-актуальності номерів
-конверсії у контакт
-Права частина — Scale / Next steps
-Масштабування
-Доступний поточний ліміт збору:
-~3 000 клієнтів / місяць
-Повний масовий збір наразі недоцільний:
-значне навантаження на RM-команду
-необхідність ручного опрацювання
-Наступні кроки
-Провести зустріч із бізнес-командою
-Узгодити:
-критерії пріоритезації клієнтів
-черговість парсингу
-цільові сегменти
-План роботи
-Формування пріоритезованих списків клієнтів
-Поступовий збір контактної інформації
-Паралельне дослідження якості та актуальності даних Юконтролу
-Запуск процесу в production-like режимі вже зараз для накопичення результатів
+Ліва частина — “Why now”
+
+Business need
+
+Менеджеру потрібна відповідь: який продукт запропонувати клієнту першим
+Поточні моделі дають оцінку по окремих продуктах
+Наступний крок — об’єднати їх у єдину систему рекомендацій
+Центр — схема
+
+Input product models → Recommendation Model → Best Next Product
+
+У центрі зробити блок:
+
+Recommendation Model
+Ranks corporate products by:
+
+propensity
+potential income / volume
+product relevance
+business priority
+
+Нижче великий блок:
+
+Best Product Offer for Client
+
+Права частина — coverage table
+
+Product coverage
+
+Product	Status
+Liabilities	Done
+Working Capital Loans	Done
+Forex Reg Activity	Done
+Investment Loans	In plan
+Other Loans	In plan
+Salary Projects Corp. Income	In plan
+Forex Volume	In plan
+Acquiring	In plan
+Invoices	In plan
+Corporate Cards	In plan
+Factoring	In plan
+Documentary	In plan
+Нижня частина — roadmap
+
+Project approach
+
+Now
+Use existing models: Liabilities, Working Capital Loans, Forex Reg Activity
+
+Next
+Add planned product models and define common scoring logic
+
+Target outcome
+Single recommendation engine for corporate cross-sell / upsell prioritization
