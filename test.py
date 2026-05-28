@@ -1,53 +1,52 @@
-import pandas as pd
+# деталізація транзакцій по конвертованих клієнтах
+converted_fx = fx_by_may[
+    fx_by_may["CONTRAGENTID"].astype(str).str.strip().isin(converted_ids)
+].copy()
 
-TABLES = [
-    "csbm.IF_IFOBSSMSDELIVERY@DWH",
-    "csbm.IF_PUSHMESSAGE@DWH",
-    "csbm.IF_MAILSMSTYPE@DWH"
-]
-
-ID_COL = "USERID"
-TEXT_COL = "TEXT"
+converted_fx.head()
 
 
-def chunks(values, n=900):
-    values = list(values)
-    for i in range(0, len(values), n):
-        yield values[i:i+n]
-
-
-def sql_in(values):
-    return ",".join(f"'{str(x).strip()}'" for x in values)
-
-
-found_parts = []
-
-for table in TABLES:
-    for client_part in chunks(clients, 900):
-        ids = sql_in(client_part)
-
-        QUERY = f"""
-            SELECT
-                {ID_COL} AS CONTRAGENTID,
-                {TEXT_COL} AS TEXT
-            FROM {table}
-            WHERE {ID_COL} IN ({ids})
-        """
-
-        temp = get_data(QUERY)
-
-        if temp is not None and len(temp) > 0:
-            temp["SOURCE_TABLE"] = table
-            found_parts.append(temp)
-
-
-found_df = pd.concat(found_parts, ignore_index=True)
-
-found_df["CONTRAGENTID"] = (
-    found_df["CONTRAGENTID"]
-    .astype(str)
-    .str.strip()
-    .str.replace(r"\.0$", "", regex=True)
+# сума FX по клієнтах
+conversion_summary = (
+    converted_fx
+    .groupby("CONTRAGENTID", as_index=False)
+    .agg(
+        fx_operations=("CONTRAGENTID", "count"),
+        fx_total_amount=("AMOUNT", "sum")
+    )
 )
 
-found_df = found_df.drop_duplicates()
+conversion_summary
+
+
+
+
+converted_fx["ARCDATE"] = pd.to_datetime(converted_fx["ARCDATE"])
+
+fx_grouped = (
+    converted_fx
+    .groupby("CONTRAGENTID", as_index=False)
+    .agg(
+        first_fx_date=("ARCDATE", "min"),
+        last_fx_date=("ARCDATE", "max"),
+        fx_days=("ARCDATE", lambda x: x.dt.date.nunique()),
+        fx_operations=("ARCDATE", "count"),
+        fx_total_amount=("AMOUNT", "sum")
+    )
+    .sort_values("first_fx_date")
+)
+
+fx_grouped
+
+
+
+fx_dates_by_client = (
+    converted_fx
+    .groupby("CONTRAGENTID", as_index=False)
+    .agg(
+        fx_dates=("ARCDATE", lambda x: " | ".join(sorted(x.dt.strftime("%Y-%m-%d").unique()))),
+        fx_operations=("ARCDATE", "count")
+    )
+)
+
+fx_dates_by_client
