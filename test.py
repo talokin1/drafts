@@ -1,64 +1,12 @@
-import numpy as np
-import pandas as pd
-
-from catboost import CatBoostClassifier, Pool
-from sklearn.model_selection import StratifiedGroupKFold
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    average_precision_score,
-    roc_auc_score,
-    log_loss
-)
-
-df = train_dataset.copy()
-
-target_col = 'SEGMENT'
-
-drop_cols = [
-    'SEGMENT',
-    'MOBILEPHONE',
-    'CONTRAGENTID',
-    'BALANCE'   # прибираємо leakage
-]
-
-X = df.drop(columns=drop_cols)
-groups = df['CONTRAGENTID']
-
-le = LabelEncoder()
-y = le.fit_transform(df[target_col])
-
-print("Класи:", list(le.classes_))
-print(df[target_col].value_counts())
-
-cat_features = X.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
-
-for col in cat_features:
-    X[col] = X[col].fillna('Missing').astype(str)
-
-num_features = [col for col in X.columns if col not in cat_features]
-
-for col in num_features:
-    X[col] = X[col].fillna(X[col].median())
-
-sgkf = StratifiedGroupKFold(
-    n_splits=5,
-    shuffle=True,
-    random_state=42
-)
-
-oof_proba = np.zeros((len(X), len(le.classes_)))
-oof_pred = np.zeros(len(X), dtype=int)
-
-models = []
+all_classes = set(np.unique(y))
 
 for fold, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups), 1):
     X_train, X_val = X.iloc[train_idx].copy(), X.iloc[val_idx].copy()
     y_train, y_val = y[train_idx], y[val_idx]
+
+    if set(np.unique(y_train)) != all_classes:
+        print(f"Fold {fold} skipped: train has classes {np.unique(y_train)}")
+        continue
 
     train_pool = Pool(X_train, y_train, cat_features=cat_features)
     val_pool = Pool(X_val, y_val, cat_features=cat_features)
@@ -95,7 +43,7 @@ for fold, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups), 1):
         zero_division=0
     ))
 
-models.append(model)
+    models.append(model)
 
 
 
