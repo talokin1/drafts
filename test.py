@@ -399,6 +399,41 @@ def evaluate_thresholds(y_true, proba, hnwi_threshold, prem_threshold):
     return result
 
 
+
+valid_proba = model.predict_proba(X_valid)
+
+y_pred_argmax = model.predict(
+    X_valid,
+    mode="argmax"
+)
+
+print("Classification report — argmax:")
+print(classification_report(
+    y_valid,
+    y_pred_argmax,
+    labels=["MASS", "PREM", "HNWI"]
+))
+
+print("Confusion matrix — argmax:")
+cm = confusion_matrix(
+    y_valid,
+    y_pred_argmax,
+    labels=["MASS", "PREM", "HNWI"]
+)
+
+cm_df = pd.DataFrame(
+    cm,
+    index=["true_MASS", "true_PREM", "true_HNWI"],
+    columns=["pred_MASS", "pred_PREM", "pred_HNWI"]
+)
+
+display(cm_df)
+
+print("Balanced accuracy:", balanced_accuracy_score(y_valid, y_pred_argmax))
+print("Macro F1:", f1_score(y_valid, y_pred_argmax, average="macro"))
+
+
+
 threshold_results = []
 
 hnwi_grid = np.arange(0.05, 0.61, 0.025)
