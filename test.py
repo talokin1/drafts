@@ -1,78 +1,56 @@
 import numpy as np
 import pandas as pd
 
-df_adj_assets = df_liabs.copy()
+df_adj_fx = df_liabs.copy()
 
-RAW_COL = "ASSETS_POTENTIAL"
+RAW_COL = "FX_POTENTIAL"
 TOTAL_COL = "POTENTIAL_INCOME"
-PROP_COL = "PRIMARY_ASSETS"
+PROP_COL = "PROB_TO_FX"
 
-PRIMARY_THRESHOLD = 0.30
+FX_THRESHOLD = 0.01
 
-bucket_cols = [
-    "0_ASSETS",
-    "0-5M_ASSETS",
-    "5M-10M_ASSETS",
-    "10M-20M_ASSETS",
-    "20M-30M_ASSETS",
-    ">30M_ASSETS"
-]
+df_adj_fx["FX_POTENTIAL_RAW"] = df_adj_fx[RAW_COL]
 
-df_adj_assets["ASSETS_POTENTIAL_RAW"] = df_adj_assets[RAW_COL]
+for col in [RAW_COL, TOTAL_COL, PROP_COL]:
+    df_adj_fx[col] = pd.to_numeric(df_adj_fx[col], errors="coerce").fillna(0)
 
-for col in [RAW_COL, TOTAL_COL, PROP_COL] + bucket_cols:
-    df_adj_assets[col] = pd.to_numeric(df_adj_assets[col], errors="coerce").fillna(0)
+df_adj_fx["FX_RECON_FACTOR"] = 1.0
 
-df_adj_assets["ASSETS_TOP_BUCKET"] = df_adj_assets[bucket_cols].idxmax(axis=1)
-df_adj_assets["ASSETS_TOP_BUCKET_PROB"] = df_adj_assets[bucket_cols].max(axis=1)
+# FX propensity дуже низький — зануляємо FX potential
+df_adj_fx.loc[
+    df_adj_fx[PROP_COL] < FX_THRESHOLD,
+    "FX_RECON_FACTOR"
+] = 0.0
 
-df_adj_assets["ASSETS_RECON_FACTOR"] = 1.0
-
-# PRIMARY нижче порогу — загально знижуємо
-df_adj_assets.loc[
-    df_adj_assets[PROP_COL] < PRIMARY_THRESHOLD,
-    "ASSETS_RECON_FACTOR"
-] = 0.50
-
-# PRIMARY нижче порогу + top bucket = 0-5M — активи можливі, але малий обсяг
-df_adj_assets.loc[
-    (df_adj_assets[PROP_COL] < PRIMARY_THRESHOLD)
-    & (df_adj_assets["ASSETS_TOP_BUCKET"] == "0-5M_ASSETS"),
-    "ASSETS_RECON_FACTOR"
-] = 0.30
-
-# PRIMARY нижче порогу + top bucket = 0 — активів не очікується
-df_adj_assets.loc[
-    (df_adj_assets[PROP_COL] < PRIMARY_THRESHOLD)
-    & (df_adj_assets["ASSETS_TOP_BUCKET"] == "0_ASSETS"),
-    "ASSETS_RECON_FACTOR"
-] = 0.00
-
-# PRIMARY 0.30-0.50 + top bucket = 0-5M — слабкий, але позитивний сигнал
-df_adj_assets.loc[
-    (df_adj_assets[PROP_COL] >= PRIMARY_THRESHOLD)
-    & (df_adj_assets[PROP_COL] < 0.50)
-    & (df_adj_assets["ASSETS_TOP_BUCKET"] == "0-5M_ASSETS"),
-    "ASSETS_RECON_FACTOR"
-] = 0.60
-
-# PRIMARY 0.30-0.50 + top bucket = 0 — не зануляємо, але знижуємо
-df_adj_assets.loc[
-    (df_adj_assets[PROP_COL] >= PRIMARY_THRESHOLD)
-    & (df_adj_assets[PROP_COL] < 0.50)
-    & (df_adj_assets["ASSETS_TOP_BUCKET"] == "0_ASSETS"),
-    "ASSETS_RECON_FACTOR"
+# FX propensity слабкий, але не нульовий — можна залишити частину
+df_adj_fx.loc[
+    (df_adj_fx[PROP_COL] >= FX_THRESHOLD)
+    & (df_adj_fx[PROP_COL] < 0.03),
+    "FX_RECON_FACTOR"
 ] = 0.40
 
-df_adj_assets[RAW_COL] = (
-    df_adj_assets["ASSETS_POTENTIAL_RAW"]
-    * df_adj_assets["ASSETS_RECON_FACTOR"]
+# FX propensity нормальний
+df_adj_fx.loc[
+    (df_adj_fx[PROP_COL] >= 0.03)
+    & (df_adj_fx[PROP_COL] < 0.07),
+    "FX_RECON_FACTOR"
+] = 0.70
+
+# FX propensity високий
+df_adj_fx.loc[
+    df_adj_fx[PROP_COL] >= 0.07,
+    "FX_RECON_FACTOR"
+] = 1.0
+
+df_adj_fx[RAW_COL] = (
+    df_adj_fx["FX_POTENTIAL_RAW"]
+    * df_adj_fx["FX_RECON_FACTOR"]
 )
 
-df_adj_assets[TOTAL_COL] = (
-    df_adj_assets[TOTAL_COL]
-    - df_adj_assets["ASSETS_POTENTIAL_RAW"]
-    + df_adj_assets[RAW_COL]
+df_adj_fx[TOTAL_COL] = (
+    df_adj_fx[TOTAL_COL]
+    - df_adj_fx["FX_POTENTIAL_RAW"]
+    + df_adj_fx[RAW_COL]
 )
 
-df_adj_assets
+df_adj_fx
