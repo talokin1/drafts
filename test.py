@@ -108,22 +108,41 @@ print("Val active share:", round((df_val[TARGET_NAME] > 0).mean(), 4))
 
 
 # ------------- HELPERS
-def prepare_X(df_part, features, cat_cols=None):
-    X = df_part[features].copy()
+def prepare_train_val_X(df_train, df_val, features):
+    X_train = df_train[features].copy()
+    X_val = df_val[features].copy()
 
-    # object -> category
-    if cat_cols is None:
-        cat_cols = [
-            c for c in X.columns
-            if X[c].dtype.name in ("object", "category")
-        ]
+    cat_cols = [
+        c for c in X_train.columns
+        if X_train[c].dtype.name in ("object", "category")
+    ]
 
+    num_cols = [c for c in X_train.columns if c not in cat_cols]
+
+    # числові фічі
+    for c in num_cols:
+        X_train[c] = pd.to_numeric(X_train[c], errors="coerce")
+        X_val[c] = pd.to_numeric(X_val[c], errors="coerce")
+
+        median_value = X_train[c].median()
+
+        X_train[c] = X_train[c].fillna(median_value)
+        X_val[c] = X_val[c].fillna(median_value)
+
+    # категоріальні фічі
     for c in cat_cols:
-        if c in X.columns:
-            X.loc[:, c] = X[c].astype("category")
+        X_train[c] = X_train[c].astype("string").fillna("UNKNOWN")
+        X_val[c] = X_val[c].astype("string").fillna("UNKNOWN")
 
-    return X, cat_cols
+        # категорії мають бути однаковими в train і validation
+        all_categories = pd.Index(
+            pd.concat([X_train[c], X_val[c]], axis=0).unique()
+        )
 
+        X_train[c] = pd.Categorical(X_train[c], categories=all_categories)
+        X_val[c] = pd.Categorical(X_val[c], categories=all_categories)
+
+    return X_train, X_val, cat_cols
 
 
 
@@ -131,8 +150,11 @@ def prepare_X(df_part, features, cat_cols=None):
 
 
 
-X_train_clf, cat_cols = prepare_X(df_train, final_features)
-X_val_clf, _ = prepare_X(df_val, final_features, cat_cols=cat_cols)
+X_train_clf, X_val_clf, cat_cols = prepare_train_val_X(
+    df_train=df_train,
+    df_val=df_val,
+    features=final_features
+)
 
 y_train_clf = (df_train[TARGET_NAME] > 0).astype(int)
 y_val_clf = (df_val[TARGET_NAME] > 0).astype(int)
@@ -140,6 +162,13 @@ y_val_clf = (df_val[TARGET_NAME] > 0).astype(int)
 print("Train positives:", y_train_clf.sum())
 print("Val positives:", y_val_clf.sum())
 print("Categorical columns:", cat_cols)
+
+print("\nDtypes check:")
+print(X_train_clf.dtypes.value_counts())
+
+bad_cols = X_train_clf.select_dtypes(include=["object"]).columns.tolist()
+print("\nObject columns after preprocessing:", bad_cols)
+
 
 clf_binary = lgb.LGBMClassifier(
     objective="binary",
