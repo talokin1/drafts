@@ -1,56 +1,56 @@
-import numpy as np
+import re
 import pandas as pd
 
-df_adj_fx = df_liabs.copy()
+def normalize_phone(x):
+    if pd.isna(x):
+        return None
+    
+    x = str(x).strip()
+    digits = re.sub(r"\D", "", x)
 
-RAW_COL = "FX_POTENTIAL"
-TOTAL_COL = "POTENTIAL_INCOME"
-PROP_COL = "PROB_TO_FX"
+    # 0804741213 -> 380804741213
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "38" + digits
 
-FX_THRESHOLD = 0.01
+    # 8063... -> 38063...
+    elif digits.startswith("80") and len(digits) == 11:
+        digits = "3" + digits
 
-df_adj_fx["FX_POTENTIAL_RAW"] = df_adj_fx[RAW_COL]
+    # 063... -> 38063...
+    elif digits.startswith("63") and len(digits) == 9:
+        digits = "380" + digits
 
-for col in [RAW_COL, TOTAL_COL, PROP_COL]:
-    df_adj_fx[col] = pd.to_numeric(df_adj_fx[col], errors="coerce").fillna(0)
+    return digits if digits else None
 
-df_adj_fx["FX_RECON_FACTOR"] = 1.0
 
-# FX propensity дуже низький — зануляємо FX potential
-df_adj_fx.loc[
-    df_adj_fx[PROP_COL] < FX_THRESHOLD,
-    "FX_RECON_FACTOR"
-] = 0.0
+def split_phones(x):
+    if pd.isna(x):
+        return []
+    
+    x = str(x).lower().strip()
+    
+    if x in ["no phone", "nan", "none", ""]:
+        return []
+    
+    parts = re.split(r"[;,/|\n]+", x)
+    return [p for p in parts if normalize_phone(p)]
 
-# FX propensity слабкий, але не нульовий — можна залишити частину
-df_adj_fx.loc[
-    (df_adj_fx[PROP_COL] >= FX_THRESHOLD)
-    & (df_adj_fx[PROP_COL] < 0.03),
-    "FX_RECON_FACTOR"
-] = 0.40
 
-# FX propensity нормальний
-df_adj_fx.loc[
-    (df_adj_fx[PROP_COL] >= 0.03)
-    & (df_adj_fx[PROP_COL] < 0.07),
-    "FX_RECON_FACTOR"
-] = 0.70
+def merge_phone_columns(row, cols=("phone", "FIRM_TELORG")):
+    phones = []
 
-# FX propensity високий
-df_adj_fx.loc[
-    df_adj_fx[PROP_COL] >= 0.07,
-    "FX_RECON_FACTOR"
-] = 1.0
+    for col in cols:
+        for p in split_phones(row[col]):
+            norm = normalize_phone(p)
+            if norm and norm not in phones:
+                phones.append(norm)
 
-df_adj_fx[RAW_COL] = (
-    df_adj_fx["FX_POTENTIAL_RAW"]
-    * df_adj_fx["FX_RECON_FACTOR"]
+    return "; ".join(phones)
+
+
+df["phones_merged"] = df.apply(
+    merge_phone_columns,
+    axis=1,
+    cols=("phone", "FIRM_TELORG")
 )
 
-df_adj_fx[TOTAL_COL] = (
-    df_adj_fx[TOTAL_COL]
-    - df_adj_fx["FX_POTENTIAL_RAW"]
-    + df_adj_fx[RAW_COL]
-)
-
-df_adj_fx
