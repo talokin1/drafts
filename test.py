@@ -108,24 +108,21 @@ print("Val active share:", round((df_val[TARGET_NAME] > 0).mean(), 4))
 
 
 # ------------- HELPERS
-y_clf_full = (df_base[TARGET_NAME] > 0).astype(int)
+def prepare_X(df_part, features, cat_cols=None):
+    X = df_part[features].copy()
 
-train_idx, val_idx = train_test_split(
-    df_base.index,
-    test_size=0.2,
-    random_state=RANDOM_STATE,
-    stratify=y_clf_full
-)
+    # object -> category
+    if cat_cols is None:
+        cat_cols = [
+            c for c in X.columns
+            if X[c].dtype.name in ("object", "category")
+        ]
 
-df_train = df_base.loc[train_idx].copy()
-df_val = df_base.loc[val_idx].copy()
+    for c in cat_cols:
+        if c in X.columns:
+            X.loc[:, c] = X[c].astype("category")
 
-print("Train shape:", df_train.shape)
-print("Val shape:", df_val.shape)
-
-print("\nTrain active share:", round((df_train[TARGET_NAME] > 0).mean(), 4))
-print("Val active share:", round((df_val[TARGET_NAME] > 0).mean(), 4))
-
+    return X, cat_cols
 
 
 
