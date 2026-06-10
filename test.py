@@ -149,43 +149,66 @@ def prepare_train_val_X(df_train, df_val, features):
 # ----------- classification
 
 
+# =========================
+# SIMPLER CLASSIFIER
+# FX_TYPE залишаємо
+# =========================
 
-X_train_clf, X_val_clf, cat_cols = prepare_train_val_X(
-    df_train=df_train,
-    df_val=df_val,
-    features=final_features
+import lightgbm as lgb
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    classification_report,
+    confusion_matrix
 )
 
-y_train_clf = (df_train[TARGET_NAME] > 0).astype(int)
-y_val_clf = (df_val[TARGET_NAME] > 0).astype(int)
+# class_weight="balanced" прибираємо
+# замість нього робимо м'якший scale_pos_weight
 
-print("Train positives:", y_train_clf.sum())
-print("Val positives:", y_val_clf.sum())
-print("Categorical columns:", cat_cols)
+n_pos = y_train_clf.sum()
+n_neg = len(y_train_clf) - n_pos
 
-print("\nDtypes check:")
-print(X_train_clf.dtypes.value_counts())
+# full balance було б n_neg / n_pos
+# беремо sqrt, щоб не перетискати позитивний клас
+scale_pos_weight = np.sqrt(n_neg / max(n_pos, 1))
 
-bad_cols = X_train_clf.select_dtypes(include=["object"]).columns.tolist()
-print("\nObject columns after preprocessing:", bad_cols)
-
+print("n_pos:", n_pos)
+print("n_neg:", n_neg)
+print("scale_pos_weight:", round(scale_pos_weight, 3))
 
 clf_binary = lgb.LGBMClassifier(
     objective="binary",
-    n_estimators=3000,
-    learning_rate=0.02,
 
-    num_leaves=31,
-    max_depth=5,
-    min_child_samples=50,
+    # менше дерев
+    n_estimators=800,
+    learning_rate=0.03,
 
-    subsample=0.8,
-    colsample_bytree=0.8,
+    # сильно спрощуємо дерево
+    num_leaves=7,
+    max_depth=3,
 
-    reg_alpha=1.0,
-    reg_lambda=3.0,
+    # забороняємо дрібні правила
+    min_child_samples=300,
+    min_child_weight=1e-2,
+    min_split_gain=0.05,
 
-    class_weight="balanced",
+    # регуляризація
+    reg_alpha=5.0,
+    reg_lambda=15.0,
+
+    # stochasticity
+    subsample=0.75,
+    subsample_freq=1,
+    colsample_bytree=0.70,
+
+    # категоріальні фічі згладжуємо
+    cat_smooth=30,
+    cat_l2=20,
+    min_data_per_group=100,
+    max_cat_threshold=16,
+
+    # м'який баланс класів
+    scale_pos_weight=scale_pos_weight,
 
     random_state=RANDOM_STATE,
     n_jobs=-1,
@@ -197,6 +220,7 @@ clf_binary.fit(
     y_train_clf,
     eval_set=[(X_val_clf, y_val_clf)],
     eval_metric="binary_logloss",
+    categorical_feature=cat_cols,
     callbacks=[
         lgb.early_stopping(100),
         lgb.log_evaluation(100)
@@ -217,10 +241,8 @@ preds_val_clf = (probs_val >= threshold).astype(int)
 print("\nClassification report, threshold =", threshold)
 print(classification_report(y_val_clf, preds_val_clf))
 
-cm = confusion_matrix(y_val_clf, preds_val_clf)
 print("Confusion matrix:")
-print(cm)
-
+print(confusion_matrix(y_val_clf, preds_val_clf))
 
 
 
