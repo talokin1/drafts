@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import joblib
+import os
 
 
 class TwoStageFXModel:
@@ -10,39 +11,38 @@ class TwoStageFXModel:
         reg_model,
         features_cols,
         cat_cols,
-        num_medians=None,
-        category_values=None,
-        threshold=0.3,
-        prediction_mode="expected"  # "expected" або "threshold"
+        num_medians,
+        category_values,
+        threshold=0.30,
+        prediction_mode="expected"
     ):
         self.clf_model = clf_model
         self.reg_model = reg_model
-        
+
         self.features_cols = list(features_cols)
         self.cat_cols = list(cat_cols)
+        self.num_cols = [c for c in self.features_cols if c not in self.cat_cols]
+
+        self.num_medians = num_medians
+        self.category_values = category_values
+
         self.threshold = threshold
         self.prediction_mode = prediction_mode
 
-        self.num_cols = [c for c in self.features_cols if c not in self.cat_cols]
-
-        self.num_medians = num_medians if num_medians is not None else {}
-        self.category_values = category_values if category_values is not None else {}
-
-    def _prepare_X(self, X):
-        X = X.copy()
+    def _prepare_X(self, df):
+        X = df.copy()
 
         missing_cols = [c for c in self.features_cols if c not in X.columns]
         if len(missing_cols) > 0:
-            raise ValueError(f"У датафреймі немає потрібних фіч: {missing_cols}")
+            raise ValueError(f"У df немає потрібних фіч: {missing_cols}")
 
         X = X[self.features_cols].copy()
 
-        # numerical columns
+        # numeric columns
         for c in self.num_cols:
             X[c] = pd.to_numeric(X[c], errors="coerce")
 
             fill_value = self.num_medians.get(c, 0)
-
             if pd.isna(fill_value):
                 fill_value = 0
 
@@ -52,94 +52,82 @@ class TwoStageFXModel:
         for c in self.cat_cols:
             X[c] = X[c].astype("string").fillna("UNKNOWN")
 
-            allowed_categories = self.category_values.get(c, None)
+            cats = self.category_values.get(c, ["UNKNOWN"])
+            cats = list(cats)
 
-            if allowed_categories is not None:
-                allowed_categories = list(allowed_categories)
+            if "UNKNOWN" not in cats:
+                cats.append("UNKNOWN")
 
-                if "UNKNOWN" not in allowed_categories:
-                    allowed_categories.append("UNKNOWN")
+            # unseen categories -> UNKNOWN
+            X[c] = X[c].where(X[c].isin(cats), "UNKNOWN")
 
-                # unseen categories -> UNKNOWN
-                X[c] = X[c].where(X[c].isin(allowed_categories), "UNKNOWN")
-
-                X[c] = pd.Categorical(
-                    X[c],
-                    categories=allowed_categories
-                )
-            else:
-                X[c] = X[c].astype("category")
+            X[c] = pd.Categorical(X[c], categories=cats)
 
         return X
 
-    def predict(self, X):
-        """
-        Returns:
-            preds_final: фінальний FX-потенціал
-            proba: P(FX > 0)
-        """
+    def predict(self, df):
+        X = self._prepare_X(df)
 
-        X_prep = self._prepare_X(X)
+        # 1. ймовірність FX активності
+        proba = self.clf_model.predict_proba(X)[:, 1]
 
-        proba = self.clf_model.predict_proba(X_prep)[:, 1]
+        # 2. умовний прогноз суми FX, якщо клієнт активний
+        pred_log = self.reg_model.predict(X)
+        pred_log = np.clip(pred_log, 0, None)
 
-        pred_log_cond = self.reg_model.predict(X_prep)
-        pred_log_cond = np.clip(pred_log_cond, 0, None)
+        fx_cond_pred = np.expm1(pred_log)
 
-        pred_cond_amount = np.expm1(pred_log_cond)
-
+        # 3. фінальний potential
         if self.prediction_mode == "expected":
-            preds_final = proba * pred_cond_amount
+            fx_potential = proba * fx_cond_pred
 
         elif self.prediction_mode == "threshold":
-            is_profitable = proba > self.threshold
-            preds_final = np.zeros(len(X_prep))
-            preds_final[is_profitable] = pred_cond_amount[is_profitable]
+            fx_potential = np.zeros(len(df))
+            mask = proba >= self.threshold
+            fx_potential[mask] = fx_cond_pred[mask]
 
         else:
             raise ValueError("prediction_mode має бути 'expected' або 'threshold'")
 
-        return preds_final, proba
+        return fx_potential, proba
 
-    def predict_full(self, X):
-        """
-        Повертає dataframe з усіма виходами моделі.
-        """
+    def predict_full(self, df):
+        X = self._prepare_X(df)
 
-        X_prep = self._prepare_X(X)
+        proba = self.clf_model.predict_proba(X)[:, 1]
 
-        proba = self.clf_model.predict_proba(X_prep)[:, 1]
+        pred_log = self.reg_model.predict(X)
+        pred_log = np.clip(pred_log, 0, None)
 
-        pred_log_cond = self.reg_model.predict(X_prep)
-        pred_log_cond = np.clip(pred_log_cond, 0, None)
+        fx_cond_pred = np.expm1(pred_log)
 
-        pred_cond_amount = np.expm1(pred_log_cond)
+        fx_expected = proba * fx_cond_pred
 
-        expected_pred = proba * pred_cond_amount
+        fx_threshold = np.zeros(len(df))
+        mask = proba >= self.threshold
+        fx_threshold[mask] = fx_cond_pred[mask]
 
-        hard_pred = np.zeros(len(X_prep))
-        is_profitable = proba > self.threshold
-        hard_pred[is_profitable] = pred_cond_amount[is_profitable]
-
-        result = X.copy()
+        result = df.copy()
 
         result["PROB_TO_FX"] = proba
-        result["FX_COND_PRED"] = pred_cond_amount
-        result["FX_EXPECTED"] = expected_pred
-        result["FX_HARD_PRED"] = hard_pred
+        result["FX_COND_PRED"] = fx_cond_pred
+        result["FX_EXPECTED"] = fx_expected
+        result["FX_THRESHOLD_PRED"] = fx_threshold
 
         if self.prediction_mode == "expected":
-            result["FX_POTENTIAL"] = expected_pred
+            result["FX_POTENTIAL"] = fx_expected
         else:
-            result["FX_POTENTIAL"] = hard_pred
+            result["FX_POTENTIAL"] = fx_threshold
 
         return result
     
 
 MODEL_PATH = r"C:\Projects\(DS-450) Corp_potential_income\scripts\models\pickle_models\Commissions_FX.pkl"
 
+# numeric columns
 num_cols = [c for c in final_features if c not in cat_cols]
 
+# train medians for numeric columns
 num_medians = {}
 
 for c in num_cols:
@@ -148,6 +136,7 @@ for c in num_cols:
     else:
         num_medians[c] = 0
 
+# categories for categorical columns
 category_values = {}
 
 for c in cat_cols:
@@ -155,7 +144,12 @@ for c in cat_cols:
         if str(X_train_clf[c].dtype) == "category":
             cats = list(X_train_clf[c].cat.categories.astype(str))
         else:
-            cats = list(X_train_clf[c].astype("string").fillna("UNKNOWN").unique())
+            cats = list(
+                X_train_clf[c]
+                .astype("string")
+                .fillna("UNKNOWN")
+                .unique()
+            )
 
         if "UNKNOWN" not in cats:
             cats.append("UNKNOWN")
@@ -169,13 +163,19 @@ fx_model = TwoStageFXModel(
     cat_cols=cat_cols,
     num_medians=num_medians,
     category_values=category_values,
-    threshold=0.3,
-    prediction_mode="expected"   # краще для potential-моделі
+    threshold=0.30,
+    prediction_mode="expected"
 )
 
 joblib.dump(fx_model, MODEL_PATH)
 
-print(f"FX model saved to: {MODEL_PATH}")
+print("Saved FX model to:")
+print(MODEL_PATH)
+
+
+
+
+
 
 
 
@@ -194,9 +194,11 @@ MODEL_PATH = r"C:\Projects\(DS-450) Corp_potential_income\scripts\models\pickle_
 
 model = joblib.load(MODEL_PATH)
 
+print("Model loaded")
+
 preds, proba = model.predict(df)
 
 df["FX_POTENTIAL"] = preds
 df["PROB_TO_FX"] = proba
 
-df.head()
+df[["FX_POTENTIAL", "PROB_TO_FX"]].describe()
