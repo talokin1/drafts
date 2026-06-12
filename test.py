@@ -385,36 +385,53 @@ print("SMAPE         :", round(smape, 4))
 
 
 #--------- FINAL
-# P(FX > 0)
+# =========================
+# FINAL EXPECTED FX PREDICTION
+# =========================
+
+# 1. Ймовірність FX-активності для всіх validation клієнтів
 p_fx_val = clf_binary.predict_proba(X_val_clf)[:, 1]
 
-# E(FX | FX > 0) для всіх validation клієнтів
-X_val_all_reg, _ = prepare_X(df_val, final_features, cat_cols=cat_cols)
+# 2. Conditional regression prediction для всіх validation клієнтів
+# ВАЖЛИВО:
+# prepare_train_val_X повертає train і val разом.
+# Для фінального прогнозу нам потрібен X_val_all_reg.
+_, X_val_all_reg, _ = prepare_train_val_X(
+    df_train=df_train,
+    df_val=df_val,
+    features=final_features
+)
 
 pred_log_cond_val = reg.predict(X_val_all_reg)
 pred_log_cond_val = np.clip(pred_log_cond_val, 0, None)
 
 pred_amount_cond_val = np.expm1(pred_log_cond_val)
 
-# фінальний expected value
+# 3. Фінальний expected FX
 fx_expected_val = p_fx_val * pred_amount_cond_val
 
 validation_results = df_val[[TARGET_NAME]].copy()
+
 validation_results["P_FX"] = p_fx_val
 validation_results["FX_COND_PRED"] = pred_amount_cond_val
 validation_results["FX_EXPECTED"] = fx_expected_val
-
 validation_results["FX_TRUE_ACTIVE"] = (validation_results[TARGET_NAME] > 0).astype(int)
 
 validation_results = validation_results.rename(columns={
     TARGET_NAME: "FX_TRUE"
 })
 
-validation_results.head(10)
+validation_results
 
 
 
 
+
+
+
+# =========================
+# FINAL MODEL METRICS
+# =========================
 
 y_true_all = validation_results["FX_TRUE"].values
 y_pred_all = validation_results["FX_EXPECTED"].values
@@ -446,13 +463,14 @@ print("MedAE all:", round(medae_all, 2))
 print("SMAPE all:", round(smape_all, 4))
 
 
-
 plt.figure(figsize=(7, 5))
+
 sns.scatterplot(
     x=np.log1p(validation_results["FX_TRUE"]),
     y=np.log1p(validation_results["FX_EXPECTED"]),
     alpha=0.4
 )
+
 plt.xlabel("log1p(True FX)")
 plt.ylabel("log1p(Predicted FX Expected)")
 plt.title("True vs Predicted FX, log scale")
