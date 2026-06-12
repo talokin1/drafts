@@ -1,578 +1,99 @@
+import joblib
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 
-import matplotlib.pyplot as plt
-import seaborn as sns
+MODEL_PATH = "fx_hurdle_model.pkl"
 
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    classification_report,
-    confusion_matrix,
-    mean_absolute_error,
-    median_absolute_error,
-    r2_score
-)
+num_cols = [c for c in final_features if c not in cat_cols]
 
-RANDOM_STATE = 42
+num_medians = {}
 
-# =========================
-# CONFIG
-# =========================
-
-TARGET_NAME = "FX"          # заміни, якщо в тебе target називається інакше
-ID_COL = "IDENTIFYCODE"     # якщо IDENTIFYCODE у тебе в index, код нижче теж спрацює
-
-# Важливо: final_features має вже існувати
-# final_features = [...]
-
-
-df_base = df.copy()
-
-df_base[TARGET_NAME] = df_base[TARGET_NAME].clip(lower=0)
-
-if ID_COL in df_base.columns:
-    df_base = df_base.set_index(ID_COL, drop=False)
-
-print("Dataset shape:", df_base.shape)
-print("Target sum:", df_base[TARGET_NAME].sum())
-print("Active clients:", (df_base[TARGET_NAME] > 0).sum())
-print("Inactive clients:", (df_base[TARGET_NAME] == 0).sum())
-print("Active share:", round((df_base[TARGET_NAME] > 0).mean(), 4))
-
-
-plt.figure(figsize=(8, 4))
-sns.histplot(df_base[TARGET_NAME], bins=200)
-plt.title("FX target distribution")
-plt.xlabel(TARGET_NAME)
-plt.ylabel("Count")
-plt.show()
-
-plt.figure(figsize=(8, 4))
-sns.histplot(np.log1p(df_base[TARGET_NAME]), bins=100)
-plt.title("log1p(FX) target distribution")
-plt.xlabel(f"log1p({TARGET_NAME})")
-plt.ylabel("Count")
-plt.show()
-
-print(df_base[TARGET_NAME].describe(percentiles=[0.5, 0.75, 0.9, 0.95, 0.98, 0.99, 0.995, 0.999]))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-y_clf_full = (df_base[TARGET_NAME] > 0).astype(int)
-
-train_idx, val_idx = train_test_split(
-    df_base.index,
-    test_size=0.2,
-    random_state=RANDOM_STATE,
-    stratify=y_clf_full
-)
-
-df_train = df_base.loc[train_idx].copy()
-df_val = df_base.loc[val_idx].copy()
-
-print("Train shape:", df_train.shape)
-print("Val shape:", df_val.shape)
-
-print("\nTrain active share:", round((df_train[TARGET_NAME] > 0).mean(), 4))
-print("Val active share:", round((df_val[TARGET_NAME] > 0).mean(), 4))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ------------- HELPERS
-def prepare_train_val_X(df_train, df_val, features):
-    X_train = df_train[features].copy()
-    X_val = df_val[features].copy()
-
-    cat_cols = [
-        c for c in X_train.columns
-        if X_train[c].dtype.name in ("object", "category")
-    ]
-
-    num_cols = [c for c in X_train.columns if c not in cat_cols]
-
-    # числові фічі
-    for c in num_cols:
-        X_train[c] = pd.to_numeric(X_train[c], errors="coerce")
-        X_val[c] = pd.to_numeric(X_val[c], errors="coerce")
-
-        median_value = X_train[c].median()
-
-        X_train[c] = X_train[c].fillna(median_value)
-        X_val[c] = X_val[c].fillna(median_value)
-
-    # категоріальні фічі
-    for c in cat_cols:
-        X_train[c] = X_train[c].astype("string").fillna("UNKNOWN")
-        X_val[c] = X_val[c].astype("string").fillna("UNKNOWN")
-
-        # категорії мають бути однаковими в train і validation
-        all_categories = pd.Index(
-            pd.concat([X_train[c], X_val[c]], axis=0).unique()
-        )
-
-        X_train[c] = pd.Categorical(X_train[c], categories=all_categories)
-        X_val[c] = pd.Categorical(X_val[c], categories=all_categories)
-
-    return X_train, X_val, cat_cols
-
-
-
-# ----------- classification
-
-
-# =========================
-# SIMPLER CLASSIFIER
-# FX_TYPE залишаємо
-# =========================
-
-import lightgbm as lgb
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    classification_report,
-    confusion_matrix
-)
-
-# class_weight="balanced" прибираємо
-# замість нього робимо м'якший scale_pos_weight
-
-n_pos = y_train_clf.sum()
-n_neg = len(y_train_clf) - n_pos
-
-# full balance було б n_neg / n_pos
-# беремо sqrt, щоб не перетискати позитивний клас
-scale_pos_weight = np.sqrt(n_neg / max(n_pos, 1))
-
-print("n_pos:", n_pos)
-print("n_neg:", n_neg)
-print("scale_pos_weight:", round(scale_pos_weight, 3))
-
-clf_binary = lgb.LGBMClassifier(
-    objective="binary",
-
-    # менше дерев
-    n_estimators=800,
-    learning_rate=0.03,
-
-    # сильно спрощуємо дерево
-    num_leaves=7,
-    max_depth=3,
-
-    # забороняємо дрібні правила
-    min_child_samples=300,
-    min_child_weight=1e-2,
-    min_split_gain=0.05,
-
-    # регуляризація
-    reg_alpha=5.0,
-    reg_lambda=15.0,
-
-    # stochasticity
-    subsample=0.75,
-    subsample_freq=1,
-    colsample_bytree=0.70,
-
-    # категоріальні фічі згладжуємо
-    cat_smooth=30,
-    cat_l2=20,
-    min_data_per_group=100,
-    max_cat_threshold=16,
-
-    # м'який баланс класів
-    scale_pos_weight=scale_pos_weight,
-
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-    verbosity=-1
-)
-
-clf_binary.fit(
-    X_train_clf,
-    y_train_clf,
-    eval_set=[(X_val_clf, y_val_clf)],
-    eval_metric="binary_logloss",
-    categorical_feature=cat_cols,
-    callbacks=[
-        lgb.early_stopping(100),
-        lgb.log_evaluation(100)
-    ]
-)
-
-probs_val = clf_binary.predict_proba(X_val_clf)[:, 1]
-
-roc_auc = roc_auc_score(y_val_clf, probs_val)
-pr_auc = average_precision_score(y_val_clf, probs_val)
-
-print("ROC-AUC:", round(roc_auc, 4))
-print("PR-AUC :", round(pr_auc, 4))
-
-threshold = 0.30
-preds_val_clf = (probs_val >= threshold).astype(int)
-
-print("\nClassification report, threshold =", threshold)
-print(classification_report(y_val_clf, preds_val_clf))
-
-print("Confusion matrix:")
-print(confusion_matrix(y_val_clf, preds_val_clf))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# =========================
-# REGRESSION DATA PREPARATION
-# =========================
-
-df_train_reg = df_train[df_train[TARGET_NAME] > 0].copy()
-df_val_reg = df_val[df_val[TARGET_NAME] > 0].copy()
-
-print("Train regression rows:", df_train_reg.shape[0])
-print("Val regression rows:", df_val_reg.shape[0])
-
-# cap only by train
-FX_UPPER_CAP = df_train_reg[TARGET_NAME].quantile(0.99)
-
-print("FX upper cap:", FX_UPPER_CAP)
-
-df_train_reg["FX_CAPPED"] = df_train_reg[TARGET_NAME].clip(upper=FX_UPPER_CAP)
-df_val_reg["FX_CAPPED"] = df_val_reg[TARGET_NAME].clip(upper=FX_UPPER_CAP)
-
-df_train_reg["FX_LOG"] = np.log1p(df_train_reg["FX_CAPPED"])
-df_val_reg["FX_LOG"] = np.log1p(df_val_reg["FX_CAPPED"])
-
-# ВАЖЛИВО:
-# тут використовуємо функцію prepare_train_val_X, яка приймає train і val разом
-X_train_reg, X_val_reg, cat_cols_reg = prepare_train_val_X(
-    df_train=df_train_reg,
-    df_val=df_val_reg,
-    features=final_features
-)
-
-y_train_reg = df_train_reg["FX_LOG"]
-y_val_reg = df_val_reg["FX_LOG"]
-
-print("\nRegression X train shape:", X_train_reg.shape)
-print("Regression X val shape:", X_val_reg.shape)
-print("Categorical columns reg:", cat_cols_reg)
-
-print("\nDtypes check:")
-print(X_train_reg.dtypes.value_counts())
-
-bad_cols_reg = X_train_reg.select_dtypes(include=["object"]).columns.tolist()
-print("\nObject columns after preprocessing:", bad_cols_reg)
-
-reg = lgb.LGBMRegressor(
-    objective="regression_l1",
-    n_estimators=5000,
-    learning_rate=0.02,
-
-    num_leaves=31,
-    max_depth=5,
-    min_child_samples=30,
-
-    subsample=0.8,
-    colsample_bytree=0.8,
-
-    reg_alpha=1.0,
-    reg_lambda=3.0,
-
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-    verbosity=-1
-)
-
-reg.fit(
-    X_train_reg,
-    y_train_reg,
-    eval_set=[(X_val_reg, y_val_reg)],
-    eval_metric="l1",
-    callbacks=[
-        lgb.early_stopping(200),
-        lgb.log_evaluation(100)
-    ]
-)
-
-pred_log_val_reg = reg.predict(X_val_reg)
-pred_log_val_reg = np.clip(pred_log_val_reg, 0, None)
-
-y_true_log = y_val_reg.values
-y_pred_log = pred_log_val_reg
-
-y_true_reg = np.expm1(y_true_log)
-y_pred_reg = np.expm1(y_pred_log)
-
-mae_log = mean_absolute_error(y_true_log, y_pred_log)
-medae_log = median_absolute_error(y_true_log, y_pred_log)
-r2_log = r2_score(y_true_log, y_pred_log)
-
-mae_orig = mean_absolute_error(y_true_reg, y_pred_reg)
-medae_orig = median_absolute_error(y_true_reg, y_pred_reg)
-
-eps = 1e-9
-mape = np.mean(np.abs(y_true_reg - y_pred_reg) / np.maximum(np.abs(y_true_reg), eps))
-smape = np.mean(
-    2.0 * np.abs(y_true_reg - y_pred_reg) /
-    np.maximum(np.abs(y_true_reg) + np.abs(y_pred_reg), eps)
-)
-
-print("=" * 60)
-print("REGRESSION METRICS ON ACTIVE CLIENTS")
-print("=" * 60)
-print("MAE_log  :", round(mae_log, 5))
-print("MedAE_log:", round(medae_log, 5))
-print("R2_log   :", round(r2_log, 5))
-print("-" * 60)
-print("MAE original  :", round(mae_orig, 2))
-print("MedAE original:", round(medae_orig, 2))
-print("MAPE          :", round(mape, 4))
-print("SMAPE         :", round(smape, 4))
-
-
-
-
-
-
-
-
-
-
-
-#--------- FINAL
-# =========================
-# FINAL EXPECTED FX PREDICTION
-# =========================
-
-# 1. Ймовірність FX-активності для всіх validation клієнтів
-p_fx_val = clf_binary.predict_proba(X_val_clf)[:, 1]
-
-# 2. Conditional regression prediction для всіх validation клієнтів
-# ВАЖЛИВО:
-# prepare_train_val_X повертає train і val разом.
-# Для фінального прогнозу нам потрібен X_val_all_reg.
-_, X_val_all_reg, _ = prepare_train_val_X(
-    df_train=df_train,
-    df_val=df_val,
-    features=final_features
-)
-
-pred_log_cond_val = reg.predict(X_val_all_reg)
-pred_log_cond_val = np.clip(pred_log_cond_val, 0, None)
-
-pred_amount_cond_val = np.expm1(pred_log_cond_val)
-
-# 3. Фінальний expected FX
-fx_expected_val = p_fx_val * pred_amount_cond_val
-
-validation_results = df_val[[TARGET_NAME]].copy()
-
-validation_results["P_FX"] = p_fx_val
-validation_results["FX_COND_PRED"] = pred_amount_cond_val
-validation_results["FX_EXPECTED"] = fx_expected_val
-validation_results["FX_TRUE_ACTIVE"] = (validation_results[TARGET_NAME] > 0).astype(int)
-
-validation_results = validation_results.rename(columns={
-    TARGET_NAME: "FX_TRUE"
-})
-
-validation_results
-
-
-
-
-
-
-
-# =========================
-# FINAL MODEL METRICS
-# =========================
-
-y_true_all = validation_results["FX_TRUE"].values
-y_pred_all = validation_results["FX_EXPECTED"].values
-
-mae_all = mean_absolute_error(y_true_all, y_pred_all)
-medae_all = median_absolute_error(y_true_all, y_pred_all)
-
-true_sum = y_true_all.sum()
-pred_sum = y_pred_all.sum()
-pred_true_ratio = pred_sum / max(true_sum, 1)
-
-eps = 1e-9
-smape_all = np.mean(
-    2.0 * np.abs(y_true_all - y_pred_all) /
-    np.maximum(np.abs(y_true_all) + np.abs(y_pred_all), eps)
-)
-
-print("=" * 70)
-print("FINAL FX EXPECTED VALUE MODEL — VALIDATION")
-print("=" * 70)
-print("Rows:", len(validation_results))
-print("True active clients:", int((y_true_all > 0).sum()))
-print("Predicted total FX:", round(pred_sum, 2))
-print("True total FX     :", round(true_sum, 2))
-print("Pred / True ratio :", round(pred_true_ratio, 4))
-print("-" * 70)
-print("MAE all  :", round(mae_all, 2))
-print("MedAE all:", round(medae_all, 2))
-print("SMAPE all:", round(smape_all, 4))
-
-
-plt.figure(figsize=(7, 5))
-
-sns.scatterplot(
-    x=np.log1p(validation_results["FX_TRUE"]),
-    y=np.log1p(validation_results["FX_EXPECTED"]),
-    alpha=0.4
-)
-
-plt.xlabel("log1p(True FX)")
-plt.ylabel("log1p(Predicted FX Expected)")
-plt.title("True vs Predicted FX, log scale")
-plt.grid(True, alpha=0.3)
-plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def get_lgb_importance(model, feature_names):
-    importance_gain = model.booster_.feature_importance(importance_type="gain")
-
-    df_imp = pd.DataFrame({
-        "Feature": feature_names,
-        "Importance": importance_gain
-    })
-
-    total = df_imp["Importance"].sum()
-    if total > 0:
-        df_imp["Importance_%"] = 100 * df_imp["Importance"] / total
+for c in num_cols:
+    if c in df_train.columns:
+        num_medians[c] = pd.to_numeric(df_train[c], errors="coerce").median()
     else:
-        df_imp["Importance_%"] = 0
+        num_medians[c] = 0
 
-    df_imp = df_imp.sort_values("Importance_%", ascending=False).reset_index(drop=True)
+category_values = {}
 
-    return df_imp
+for c in cat_cols:
+    if c in X_train_clf.columns:
+        if hasattr(X_train_clf[c], "cat"):
+            cats = list(X_train_clf[c].cat.categories.astype(str))
+        else:
+            cats = list(pd.Series(X_train_clf[c].astype("string")).dropna().unique())
 
+        if "UNKNOWN" not in cats:
+            cats.append("UNKNOWN")
 
-clf_importance = get_lgb_importance(clf_binary, X_train_clf.columns)
+        category_values[c] = cats
 
-print("Top-20 classifier features:")
-print(clf_importance.head(20))
+model_pack = {
+    "clf_binary": clf_binary,
+    "reg": reg,
 
-plt.figure(figsize=(10, 8))
-sns.barplot(
-    data=clf_importance.head(30),
-    x="Importance_%",
-    y="Feature"
-)
-plt.title("Classifier Feature Importance — FX activity")
-plt.xlabel("Gain importance, %")
-plt.ylabel("Feature")
-plt.grid(axis="x", linestyle="--", alpha=0.5)
-plt.tight_layout()
-plt.show()
+    "final_features": final_features,
+    "cat_cols": cat_cols,
+    "num_cols": num_cols,
 
+    "num_medians": num_medians,
+    "category_values": category_values,
 
+    "target_name": TARGET_NAME,
+    "id_col": ID_COL,
+    "fx_upper_cap": FX_UPPER_CAP,
+    "random_state": RANDOM_STATE
+}
 
-def get_lgb_importance(model, feature_names):
-    importance_gain = model.booster_.feature_importance(importance_type="gain")
+joblib.dump(model_pack, MODEL_PATH)
 
-    df_imp = pd.DataFrame({
-        "Feature": feature_names,
-        "Importance": importance_gain
-    })
-
-    total = df_imp["Importance"].sum()
-    if total > 0:
-        df_imp["Importance_%"] = 100 * df_imp["Importance"] / total
-    else:
-        df_imp["Importance_%"] = 0
-
-    df_imp = df_imp.sort_values("Importance_%", ascending=False).reset_index(drop=True)
-
-    return df_imp
+print(f"Model saved to: {MODEL_PATH}")
 
 
-clf_importance = get_lgb_importance(clf_binary, X_train_clf.columns)
 
-print("Top-20 classifier features:")
-print(clf_importance.head(20))
 
-plt.figure(figsize=(10, 8))
-sns.barplot(
-    data=clf_importance.head(30),
-    x="Importance_%",
-    y="Feature"
-)
-plt.title("Classifier Feature Importance — FX activity")
-plt.xlabel("Gain importance, %")
-plt.ylabel("Feature")
-plt.grid(axis="x", linestyle="--", alpha=0.5)
-plt.tight_layout()
-plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import joblib
+import numpy as np
+import pandas as pd
+
+
+MODEL_PATH = "fx_hurdle_model.pkl"
+
+model_pack = joblib.load(MODEL_PATH)
+
+clf_binary = model_pack["clf_binary"]
+reg = model_pack["reg"]
+
+final_features = model_pack["final_features"]
+cat_cols = model_pack["cat_cols"]
+num_cols = model_pack["num_cols"]
+
+num_medians = model_pack["num_medians"]
+category_values = model_pack["category_values"]
+
+TARGET_NAME = model_pack["target_name"]
+ID_COL = model_pack["id_col"]
+FX_UPPER_CAP = model_pack["fx_upper_cap"]
+
+print("Model loaded")
+print("Number of features:", len(final_features))
+print("Categorical columns:", cat_cols)
