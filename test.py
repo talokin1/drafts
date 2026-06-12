@@ -266,6 +266,10 @@ print(confusion_matrix(y_val_clf, preds_val_clf))
 
 
 
+# =========================
+# REGRESSION DATA PREPARATION
+# =========================
+
 df_train_reg = df_train[df_train[TARGET_NAME] > 0].copy()
 df_val_reg = df_val[df_val[TARGET_NAME] > 0].copy()
 
@@ -283,20 +287,26 @@ df_val_reg["FX_CAPPED"] = df_val_reg[TARGET_NAME].clip(upper=FX_UPPER_CAP)
 df_train_reg["FX_LOG"] = np.log1p(df_train_reg["FX_CAPPED"])
 df_val_reg["FX_LOG"] = np.log1p(df_val_reg["FX_CAPPED"])
 
-X_train_reg, _ = prepare_X(df_train_reg, final_features, cat_cols=cat_cols)
-X_val_reg, _ = prepare_X(df_val_reg, final_features, cat_cols=cat_cols)
+# ВАЖЛИВО:
+# тут використовуємо функцію prepare_train_val_X, яка приймає train і val разом
+X_train_reg, X_val_reg, cat_cols_reg = prepare_train_val_X(
+    df_train=df_train_reg,
+    df_val=df_val_reg,
+    features=final_features
+)
 
 y_train_reg = df_train_reg["FX_LOG"]
 y_val_reg = df_val_reg["FX_LOG"]
 
-plt.figure(figsize=(8, 4))
-sns.histplot(y_train_reg, bins=50)
-plt.title("Regression target: log1p(FX capped)")
-plt.xlabel("FX_LOG")
-plt.ylabel("Count")
-plt.show()
+print("\nRegression X train shape:", X_train_reg.shape)
+print("Regression X val shape:", X_val_reg.shape)
+print("Categorical columns reg:", cat_cols_reg)
 
-print(y_train_reg.describe())
+print("\nDtypes check:")
+print(X_train_reg.dtypes.value_counts())
+
+bad_cols_reg = X_train_reg.select_dtypes(include=["object"]).columns.tolist()
+print("\nObject columns after preprocessing:", bad_cols_reg)
 
 reg = lgb.LGBMRegressor(
     objective="regression_l1",
