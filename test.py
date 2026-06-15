@@ -1,22 +1,43 @@
+Cards Current Month =
+VAR CurrentMonth =
+    MAX(PBI_Dim_Clients[Pilot Month])
+RETURN
+    CALCULATE(
+        [Total Cards],
+        FILTER(
+            ALL(PBI_Dim_Clients[Pilot Month]),
+            PBI_Dim_Clients[Pilot Month] = CurrentMonth
+        )
+    )
+
+
+
 Cards Prev Month =
 VAR CurrentMonth =
-    SELECTEDVALUE(PBI_Fact_Income[Income_Date])
+    MAX(PBI_Dim_Clients[Pilot Month])
 VAR PrevMonth =
     CALCULATE(
-        MAX(PBI_Fact_Income[Income_Date]),
+        MAX(PBI_Dim_Clients[Pilot Month]),
         FILTER(
-            ALL(PBI_Fact_Income[Income_Date]),
-            PBI_Fact_Income[Income_Date] < CurrentMonth
+            ALL(PBI_Dim_Clients[Pilot Month]),
+            PBI_Dim_Clients[Pilot Month] < CurrentMonth
         )
     )
 RETURN
     CALCULATE(
         [Total Cards],
         FILTER(
-            ALL(PBI_Fact_Income[Income_Date]),
-            PBI_Fact_Income[Income_Date] = PrevMonth
+            ALL(PBI_Dim_Clients[Pilot Month]),
+            PBI_Dim_Clients[Pilot Month] = PrevMonth
         )
     )
+
+
+
+
+Card MoM Diff =
+[Cards Current Month] - [Cards Prev Month]
+
 
 
 
