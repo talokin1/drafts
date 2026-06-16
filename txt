@@ -1,27 +1,14 @@
-Запит від бізнесу
+Geographic coverage insight
 
-Aurora розглядає запуск акції для тримачів карт OTP.
-Для прийняття рішення бізнесу потрібно оцінити, наскільки клієнти ЗКП покриті мережею магазинів Aurora.
+The highest concentration of ZKP clients is observed in large regions and cities where Aurora has strong store presence.
 
-Що потрібно було додати до клієнтської бази:
+Top client regions in the sample:
 
-адреса клієнта;
-область;
-населений пункт;
-інші географічні атрибути для подальшого аналізу покриття.
-Права частина слайду — “What was done”
+Kyiv — 265 clients
+Dnipropetrovsk region — 178 clients
+Kyiv region — 118 clients
+Kharkiv region — 83 clients
+Odesa region — 74 clients
+Lviv region — 57 clients
 
-Що зроблено
-
-До наданого переліку клієнтів ЗКП підтягнуто інформацію щодо їх розташування.
-
-Це дозволяє бізнесу перейти від простої клієнтської вибірки до географічного аналізу: де знаходяться потенційні учасники акції та наскільки вони можуть бути релевантними для Aurora з точки зору фізичного покриття магазинами.
-
-Нижній блок — “Status / Next step”
-
-Поточний статус
-
-Збагачена вибірка передана бізнесу.
-Наразі очікуємо рішення щодо доцільності запуску акції з Aurora та подальших кроків.
-
-Next step: після рішення бізнесу — оцінити потенційний таргетинг, формат комунікації та очікуваний ефект від кампанії.
+Aurora also has the highest store density in large regional centers, including Kyiv, Dnipro, Kharkiv, Odesa and Lviv.
