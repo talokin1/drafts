@@ -1,133 +1,60 @@
-def normalize_identifycode(df, col="IDENTIFYCODE"):
-    df = df.copy()
+def read_scores(month):
 
-    df[col] = (
-        df[col]
-        .astype("string")
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-        .str.zfill(8)
+    liabs_path = fr"M:\Controlling\Data_Science_Projects\Corp_Liabilities_external_clients\{month}\real_combined_result.csv"
+
+    assets_path = fr"M:\Controlling\Data_Science_Projects\Corp_External_Assets\{month}\model_{month}.parquet"
+
+    fx_path = fr"M:\Controlling\Data_Science_Projects\Corp_External_FX\Results\Models\{month}\fx_external_{month}.parquet"
+
+
+    liabs = (
+        pd.read_csv(liabs_path, dtype={"IDENTIFYCODE": "string"})
+        [["IDENTIFYCODE", "PRIMARY"]]
+        .rename(columns={"PRIMARY": "LIAB_PRIMARY"})
     )
 
-    return df
+    liabs = normalize_identifycode(liabs)
+    liabs = liabs.drop_duplicates("IDENTIFYCODE")
 
 
-def normalize_contragentid(df, col="CONTRAGENTID"):
-    df = df.copy()
-
-    df[col] = (
-        df[col]
-        .astype("string")
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
+    assets = (
+        pd.read_parquet(assets_path)
+        [["IDENTIFYCODE", "PRIMARY"]]
+        .rename(columns={"PRIMARY": "ASSETS_PRIMARY"})
     )
 
-    return df
+    assets = normalize_identifycode(assets)
+    assets = assets.drop_duplicates("IDENTIFYCODE")
 
 
+    if month >= "2026_04" and Path(fx_path).exists():
 
-client_map = clients[
-    ["IDENTIFYCODE", "CONTRAGENTID"]
-].copy()
-
-client_map = normalize_identifycode(client_map)
-client_map = normalize_contragentid(client_map)
-
-client_map = (
-    client_map
-    .dropna(subset=["IDENTIFYCODE", "CONTRAGENTID"])
-    .drop_duplicates("IDENTIFYCODE")
-)
-
-
-
-
-
-def read_income(month):
-
-    path = fr"M:\Controlling\Data_Science_Projects\Income_Data\income_wide_corporate_clients_{month}.csv"
-
-    income = (
-        pd.read_csv(
-            path,
-            dtype={"CONTRAGENTID": "string"}
+        fx = (
+            pd.read_parquet(fx_path)
+            [["IDENTIFYCODE", "PROB_TO_FX"]]
+            .rename(columns={"PROB_TO_FX": "FX_PRIMARY"})
         )
-        .rename(columns={"COM_CORP_FX_FOR_PAY": "INCOME_FX"})
+
+        fx = normalize_identifycode(fx)
+        fx = fx.drop_duplicates("IDENTIFYCODE")
+
+    else:
+        fx = pd.DataFrame({
+            "IDENTIFYCODE": pd.Series(dtype="string"),
+            "FX_PRIMARY": pd.Series(dtype="float")
+        })
+
+
+    scores = (
+        client_map
+        .merge(liabs, how="left", on="IDENTIFYCODE")
+        .merge(assets, how="left", on="IDENTIFYCODE")
+        .merge(fx, how="left", on="IDENTIFYCODE")
     )
 
-    income = income[
-        [
-            "CONTRAGENTID",
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ].copy()
-
-    income = normalize_contragentid(income)
-
-    income[
-        [
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ] = income[
-        [
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ].apply(pd.to_numeric, errors="coerce").fillna(0)
-
-    return (
-        income
-        .groupby("CONTRAGENTID", as_index=False)
-        .sum()
+    scores = scores.dropna(
+        subset=["LIAB_PRIMARY", "ASSETS_PRIMARY", "FX_PRIMARY"],
+        how="all"
     )
 
-
-
-
-def read_income(month):
-
-    path = fr"M:\Controlling\Data_Science_Projects\Income_Data\income_wide_corporate_clients_{month}.csv"
-
-    income = (
-        pd.read_csv(
-            path,
-            dtype={"CONTRAGENTID": "string"}
-        )
-        .rename(columns={"COM_CORP_FX_FOR_PAY": "INCOME_FX"})
-    )
-
-    income = income[
-        [
-            "CONTRAGENTID",
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ].copy()
-
-    income = normalize_contragentid(income)
-
-    income[
-        [
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ] = income[
-        [
-            "INCOME_LIABILITIES",
-            "INCOME_ASSETS",
-            "INCOME_FX"
-        ]
-    ].apply(pd.to_numeric, errors="coerce").fillna(0)
-
-    return (
-        income
-        .groupby("CONTRAGENTID", as_index=False)
-        .sum()
-    )
+    return scores
