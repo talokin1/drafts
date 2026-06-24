@@ -1,60 +1,195 @@
-def read_scores(month):
+validation_result = validation_dataset.copy()
 
-    liabs_path = fr"M:\Controlling\Data_Science_Projects\Corp_Liabilities_external_clients\{month}\real_combined_result.csv"
+# Перейменовуємо скори у формат рекомендаційки
+validation_result = validation_result.rename(
+    columns={
+        "LIAB_PRIMARY": "p_liabs",
+        "ASSETS_PRIMARY": "p_assets",
+        "FX_PRIMARY": "p_fx"
+    }
+)
 
-    assets_path = fr"M:\Controlling\Data_Science_Projects\Corp_External_Assets\{month}\model_{month}.parquet"
+thresholds = {
+    "p_liabs": 0.30,
+    "p_assets": 0.30,
+    "p_fx": 0.59
+}
 
-    fx_path = fr"M:\Controlling\Data_Science_Projects\Corp_External_FX\Results\Models\{month}\fx_external_{month}.parquet"
+
+# Рахуємо normalized score окремо для кожного продукту.
+# NaN зберігається: продукт недоступний для рекомендації.
+
+validation_result["score_liabs"] = np.where(
+    validation_result["p_liabs"].notna(),
+    scale_by_threshold(
+        validation_result["p_liabs"],
+        thresholds["p_liabs"]
+    ),
+    np.nan
+)
+
+validation_result["score_assets"] = np.where(
+    validation_result["p_assets"].notna(),
+    scale_by_threshold(
+        validation_result["p_assets"],
+        thresholds["p_assets"]
+    ),
+    np.nan
+)
+
+validation_result["score_fx"] = np.where(
+    validation_result["p_fx"].notna(),
+    scale_by_threshold(
+        validation_result["p_fx"],
+        thresholds["p_fx"]
+    ),
+    np.nan
+)
 
 
-    liabs = (
-        pd.read_csv(liabs_path, dtype={"IDENTIFYCODE": "string"})
-        [["IDENTIFYCODE", "PRIMARY"]]
-        .rename(columns={"PRIMARY": "LIAB_PRIMARY"})
+
+score_cols = ["score_liabs", "score_assets", "score_fx"]
+
+# Для вибору максимуму недоступні продукти тимчасово ставимо в -inf.
+# Це не дає, наприклад, Liabilities виграти лише тому,
+# що всі скори були заповнені нулями.
+
+decision_scores = validation_result[score_cols].fillna(-np.inf)
+
+validation_result["recommendation_score"] = (
+    decision_scores.max(axis=1)
+)
+
+validation_result["recommended_product"] = (
+    decision_scores.idxmax(axis=1)
+    .map({
+        "score_liabs": "Liabilities",
+        "score_assets": "Assets",
+        "score_fx": "FX"
+    })
+)
+
+# Якщо для клієнта взагалі не було жодного доступного продукту
+validation_result.loc[
+    validation_result[score_cols].isna().all(axis=1),
+    ["recommended_product", "recommendation_score"]
+] = [pd.NA, np.nan]
+
+
+
+# Сира ймовірність саме рекомендованого продукту
+
+validation_result["recommended_raw_probability"] = np.select(
+    [
+        validation_result["recommended_product"].eq("Liabilities"),
+        validation_result["recommended_product"].eq("Assets"),
+        validation_result["recommended_product"].eq("FX")
+    ],
+    [
+        validation_result["p_liabs"],
+        validation_result["p_assets"],
+        validation_result["p_fx"]
+    ],
+    default=np.nan
+)
+
+
+
+validation_result["is_correct"] = (
+    validation_result["recommended_product"]
+    == validation_result["actual_product"]
+)
+
+
+
+
+
+
+
+validation_result_clean = validation_result[
+    (validation_result["actual_product"].notna())
+    & (validation_result["n_actual_products"] == 1)
+    & (validation_result["recommended_product"].notna())
+].copy()
+
+
+validation_result_clean["is_correct"].mean()
+
+
+
+
+
+
+
+product_quality = (
+    validation_result_clean
+    .groupby("actual_product")
+    .agg(
+        clients=("IDENTIFYCODE", "count"),
+        correct=("is_correct", "sum"),
+        accuracy=("is_correct", "mean"),
+        avg_recommendation_score=("recommendation_score", "mean")
     )
+    .sort_values("clients", ascending=False)
+)
 
-    liabs = normalize_identifycode(liabs)
-    liabs = liabs.drop_duplicates("IDENTIFYCODE")
+product_quality
 
 
-    assets = (
-        pd.read_parquet(assets_path)
-        [["IDENTIFYCODE", "PRIMARY"]]
-        .rename(columns={"PRIMARY": "ASSETS_PRIMARY"})
+
+
+
+
+
+month_quality = (
+    validation_result_clean
+    .groupby("score_month")
+    .agg(
+        clients=("IDENTIFYCODE", "count"),
+        correct=("is_correct", "sum"),
+        accuracy=("is_correct", "mean")
     )
+    .sort_index()
+)
 
-    assets = normalize_identifycode(assets)
-    assets = assets.drop_duplicates("IDENTIFYCODE")
-
-
-    if month >= "2026_04" and Path(fx_path).exists():
-
-        fx = (
-            pd.read_parquet(fx_path)
-            [["IDENTIFYCODE", "PROB_TO_FX"]]
-            .rename(columns={"PROB_TO_FX": "FX_PRIMARY"})
-        )
-
-        fx = normalize_identifycode(fx)
-        fx = fx.drop_duplicates("IDENTIFYCODE")
-
-    else:
-        fx = pd.DataFrame({
-            "IDENTIFYCODE": pd.Series(dtype="string"),
-            "FX_PRIMARY": pd.Series(dtype="float")
-        })
+month_quality
 
 
-    scores = (
-        client_map
-        .merge(liabs, how="left", on="IDENTIFYCODE")
-        .merge(assets, how="left", on="IDENTIFYCODE")
-        .merge(fx, how="left", on="IDENTIFYCODE")
-    )
 
-    scores = scores.dropna(
-        subset=["LIAB_PRIMARY", "ASSETS_PRIMARY", "FX_PRIMARY"],
-        how="all"
-    )
 
-    return scores
+
+
+
+
+
+
+
+
+validation_result_clean[
+    validation_result_clean["is_correct"] == False
+][
+    [
+        "score_month",
+        "IDENTIFYCODE",
+        "actual_product",
+        "recommended_product",
+        "p_liabs",
+        "p_assets",
+        "p_fx",
+        "score_liabs",
+        "score_assets",
+        "score_fx",
+        "recommendation_score"
+    ]
+].head(30)
+
+
+
+
+
+pd.crosstab(
+    validation_result_clean["actual_product"],
+    validation_result_clean["recommended_product"],
+    margins=True,
+    normalize="index"
+).round(3)
