@@ -1,67 +1,72 @@
-evaluation = validation_result_clean.copy()
+import pandas as pd
+import numpy as np
 
-always_liabs_accuracy = (
-    evaluation["actual_product"]
-    .eq("Liabilities")
-    .mean()
+
+rec_product_col = 'recomended_product'
+
+print(f"Колонка з рекомендацією: {rec_product_col}")
+
+
+# =========================================================
+# 3. Формуємо фактичні продукти, до яких залучився клієнт
+# =========================================================
+
+validation_all["NEW_LIABILITIES"] = (
+    validation_all["NEW_LIABILITIES"]
+    .fillna(False)
+    .astype(bool)
 )
 
-always_assets_accuracy = (
-    evaluation["actual_product"]
-    .eq("Assets")
-    .mean()
+validation_all["NEW_ASSETS"] = (
+    validation_all["NEW_ASSETS"]
+    .fillna(False)
+    .astype(bool)
 )
 
-calibrated_accuracy = evaluation["is_correct"].mean()
+validation_all["NEW_FX"] = (
+    validation_all["NEW_FX"]
+    .fillna(False)
+    .astype(bool)
+)
 
-pd.DataFrame({
-    "strategy": [
-        "Always Liabilities",
-        "Always Assets",
-        "Calibrated rule-based"
+validation_all["actual_products_list"] = validation_all.apply(
+    lambda row: [
+        product
+        for product, condition in {
+            "Liabilities": row["NEW_LIABILITIES"],
+            "Assets": row["NEW_ASSETS"],
+            "FX": row["NEW_FX"]
+        }.items()
+        if condition
     ],
-    "accuracy": [
-        always_liabs_accuracy,
-        always_assets_accuracy,
-        calibrated_accuracy
-    ]
-}).sort_values("accuracy", ascending=False)
-
-
-
-
-(
-    validation_result_clean
-    .groupby("actual_product")
-    .agg(
-        clients=("IDENTIFYCODE", "count"),
-        
-        avg_calibrated_liabs=("calibrated_liabs", "mean"),
-        avg_calibrated_assets=("calibrated_assets", "mean"),
-        
-        median_calibrated_liabs=("calibrated_liabs", "median"),
-        median_calibrated_assets=("calibrated_assets", "median")
-    )
-    .round(4)
+    axis=1
 )
 
+validation_all["n_actual_products"] = validation_all["actual_products_list"].apply(len)
+
+validation_all["actual_product"] = validation_all["actual_products_list"].apply(
+    lambda x: ", ".join(x) if len(x) > 0 else pd.NA
+)
+
+validation_all["was_engaged"] = validation_all["n_actual_products"] > 0
 
 
+validation_engaged = validation_all.loc[
+    validation_all["was_engaged"]
+].copy()
 
-validation_result_clean.loc[
-    (
-        validation_result_clean["actual_product"].eq("Assets")
-        & ~validation_result_clean["is_correct"]
-    ),
-    [
-        "score_month",
-        "IDENTIFYCODE",
-        "LIAB_PRIMARY",
-        "ASSETS_PRIMARY",
-        "calibrated_liabs",
-        "calibrated_assets",
-        "recommendation_score",
-        "recommended_product",
-        "actual_product"
-    ]
-]
+print(f"Усього рядків у validation_all: {len(validation_all):,}")
+print(f"Клієнтів / рядків із фактичним залученням: {len(validation_engaged):,}")
+
+display(
+    validation_engaged[
+        [
+            "IDENTIFYCODE",
+            "NEW_LIABILITIES",
+            "NEW_ASSETS",
+            "NEW_FX",
+            "n_actual_products",
+            "actual_product"
+        ]
+    ].head(10)
+)
