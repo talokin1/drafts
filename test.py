@@ -1,61 +1,79 @@
-# =========================================================
-# Налаштування: допустима різниця між 1-м та 2-м продуктом
-# =========================================================
-
-MULTI_PRODUCT_GAP = 0.05
-# 0.05 = рекомендувати два продукти,
-# якщо їх нормалізовані скори відрізняються не більше ніж на 5 п.п.
-
-score_cols = ["score_liabs", "score_assets", "score_fx"]
-
-score_to_product = {
-    "score_liabs": "Liabilities",
-    "score_assets": "Assets",
-    "score_fx": "FX"
-}
-
-
-# =========================================================
-# Формування top-1 / top-2 рекомендації
-# =========================================================
-
-def get_recommended_products(row, gap=MULTI_PRODUCT_GAP):
+def get_recommended_raw_probabilities(row):
     
-    scores = row[score_cols].copy()
-    
-    # На випадок пропусків
-    scores = scores.fillna(0)
-    
-    # Сортуємо скори від найбільшого до найменшого
-    scores_sorted = scores.sort_values(ascending=False)
-    
-    best_score = scores_sorted.iloc[0]
-    second_score = scores_sorted.iloc[1]
-    
-    # Перший продукт завжди додаємо
-    selected_score_cols = [scores_sorted.index[0]]
-    
-    # Якщо другий продукт достатньо близький до першого — додаємо його
-    if (best_score - second_score) <= gap:
-        selected_score_cols.append(scores_sorted.index[1])
-    
-    # Перетворюємо назви скорів у людські назви продуктів
-    selected_products = [
-        score_to_product[col]
-        for col in selected_score_cols
+    # Розбиваємо "Liabilities, Assets" -> ["Liabilities", "Assets"]
+    products = [
+        product.strip()
+        for product in str(row["recommended_product"]).split(",")
     ]
     
-    return ", ".join(selected_products)
+    product_to_probability = {
+        "Liabilities": row["p_liabs"],
+        "Assets": row["p_assets"],
+        "FX": row["p_fx"]
+    }
+    
+    # Повертаємо ймовірності тільки рекомендованих продуктів
+    result = [
+        f"{product}: {product_to_probability[product]:.3f}"
+        for product in products
+        if product in product_to_probability
+    ]
+    
+    return ", ".join(result)
 
 
-# Найкращий нормалізований скор
-rec["recommendation_score"] = rec[score_cols].max(axis=1)
-
-# Рекомендація: один або два продукти
-rec["recommended_product"] = rec.apply(
-    get_recommended_products,
+rec["recommended_raw_probability"] = rec.apply(
+    get_recommended_raw_probabilities,
     axis=1
 )
 
-# Для аналітики: скільки продуктів потрапило в рекомендацію
-rec["n_recommended_products"] = rec["recommended_product"].str.count(",") + 1
+
+
+
+
+
+def explain_scaled_recommendation(row):
+    
+    products = [
+        product.strip()
+        for product in str(row["recommended_product"]).split(",")
+    ]
+    
+    product_info = {
+        "Liabilities": {
+            "score": row["score_liabs"],
+            "probability": row["p_liabs"],
+            "threshold": thresholds["p_liabs"]
+        },
+        "Assets": {
+            "score": row["score_assets"],
+            "probability": row["p_assets"],
+            "threshold": thresholds["p_assets"]
+        },
+        "FX": {
+            "score": row["score_fx"],
+            "probability": row["p_fx"],
+            "threshold": thresholds["p_fx"]
+        }
+    }
+    
+    explanations = []
+    
+    for product in products:
+        
+        info = product_info[product]
+        
+        explanations.append(
+            f"{product}: "
+            f"нормалізований score = {info['score']:.2f}, "
+            f"сира ймовірність = {info['probability']:.2f}, "
+            f"threshold = {info['threshold']:.2f}"
+        )
+    
+    return " | ".join(explanations)
+
+
+rec["explanation"] = rec.apply(
+    explain_scaled_recommendation,
+    axis=1
+)
