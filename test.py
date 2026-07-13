@@ -1,79 +1,86 @@
-def get_recommended_raw_probabilities(row):
-    
-    # Розбиваємо "Liabilities, Assets" -> ["Liabilities", "Assets"]
-    products = [
-        product.strip()
-        for product in str(row["recommended_product"]).split(",")
-    ]
-    
-    product_to_probability = {
-        "Liabilities": row["p_liabs"],
-        "Assets": row["p_assets"],
-        "FX": row["p_fx"]
-    }
-    
-    # Повертаємо ймовірності тільки рекомендованих продуктів
-    result = [
-        f"{product}: {product_to_probability[product]:.3f}"
-        for product in products
-        if product in product_to_probability
-    ]
-    
-    return ", ".join(result)
+import pandas as pd
+from pathlib import Path
 
 
-rec["recommended_raw_probability"] = rec.apply(
-    get_recommended_raw_probabilities,
+# 1. Шлях до нової нерозміченої вибірки
+input_path = Path(
+    r"C:\Projects\(DS-398) Acquiring\new_sample.xlsx"
+)
+
+# 2. Куди зберегти результат
+output_path = input_path.with_name(
+    f"{input_path.stem}_marked.xlsx"
+)
+
+
+# 3. Завантажуємо нову вибірку
+df_new = pd.read_excel(input_path)
+
+
+# 4. Перевіряємо наявність потрібних колонок
+required_columns = [
+    "PLATPURPOSE",
+    "CONTRAGENTASNAME"
+]
+
+missing_columns = [
+    col for col in required_columns
+    if col not in df_new.columns
+]
+
+if missing_columns:
+    raise ValueError(
+        f"У файлі немає колонок: {missing_columns}"
+    )
+
+
+# 5. Застосовуємо правила до кожного рядка
+detected = df_new.apply(
+    detect_acquiring,
     axis=1
 )
 
 
-
-
-
-
-def explain_scaled_recommendation(row):
-    
-    products = [
-        product.strip()
-        for product in str(row["recommended_product"]).split(",")
-    ]
-    
-    product_info = {
-        "Liabilities": {
-            "score": row["score_liabs"],
-            "probability": row["p_liabs"],
-            "threshold": thresholds["p_liabs"]
-        },
-        "Assets": {
-            "score": row["score_assets"],
-            "probability": row["p_assets"],
-            "threshold": thresholds["p_assets"]
-        },
-        "FX": {
-            "score": row["score_fx"],
-            "probability": row["p_fx"],
-            "threshold": thresholds["p_fx"]
-        }
-    }
-    
-    explanations = []
-    
-    for product in products:
-        
-        info = product_info[product]
-        
-        explanations.append(
-            f"{product}: "
-            f"нормалізований score = {info['score']:.2f}, "
-            f"сира ймовірність = {info['probability']:.2f}, "
-            f"threshold = {info['threshold']:.2f}"
-        )
-    
-    return " | ".join(explanations)
-
-
-rec["explanation"] = rec.apply(
-    explain_scaled_recommendation,
+# 6. Додаємо результат до початкової вибірки
+result = pd.concat(
+    [
+        df_new.reset_index(drop=True),
+        detected.reset_index(drop=True)
+    ],
     axis=1
 )
+
+
+# 7. Додаємо версію алгоритму
+result["acq_rule_version"] = "regex_v1"
+
+
+# 8. Виводимо коротку статистику
+print("Кількість рядків:", len(result))
+
+print(
+    "Знайдено потенційного еквайрингу:",
+    result["is_acquiring"].sum()
+)
+
+print(
+    "Частка потенційного еквайрингу:",
+    round(result["is_acquiring"].mean() * 100, 2),
+    "%"
+)
+
+print("\nПричини спрацювання:")
+print(
+    result["acq_reason"]
+    .value_counts(dropna=False)
+)
+
+
+# 9. Зберігаємо результат
+result.to_excel(
+    output_path,
+    index=False
+)
+
+print("\nФайл збережено:")
+print(output_path)
