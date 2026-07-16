@@ -1,0 +1,20 @@
+Current status
+
+Model development is in progress
+
+A study was conducted to define the balance threshold for classifying a customer as HNWI. The initial threshold of UAH 1,000,000 resulted in a very small training sample.
+
+To increase the number of observations, several lower thresholds were tested:
+
+UAH 300K: 119 HNWI clients — 38.64%
+UAH 500K: 72 HNWI clients — 23.38%
+UAH 700K: 52 HNWI clients — 16.88%
+UAH 1M: 46 HNWI clients — 14.94%
+
+Based on this analysis, UAH 700,000 was selected as the working HNWI threshold. It provides a larger training sample while preserving a relatively high customer wealth level.
+
+The model is currently being developed and tested.
+
+Next step
+
+Next Thursday, a meeting with Viktoriia Myslyva is planned to present the current model approach, discuss the results and agree on further development steps.
