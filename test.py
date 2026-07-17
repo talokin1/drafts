@@ -1,132 +1,173 @@
-import pandas as pd
-import numpy as np
+score_parts = []
 
-# Нормалізація ідентифікаторів
-def normalize_ids(df):
-    df = df.copy()
+for month in SCORE_MONTHS:
+    try:
+        part = read_scores(month).copy()
+        part["score_month"] = month
+        score_parts.append(part)
 
-    df["CONTRAGENTID"] = (
-        df["CONTRAGENTID"].astype("string").str.replace(r"\.0$", "", regex=True)
+        print(f"{month}: scores OK, rows = {len(part):,}")
+
+    except FileNotFoundError:
+        print(f"{month}: score files not found")
+
+scores_all = pd.concat(score_parts, ignore_index=True)
+
+def get_latest_score(df, score_col):
+    return (
+        df.loc[
+            df[score_col].notna(),
+            ["IDENTIFYCODE", score_col, "score_month"]
+        ]
+        .sort_values("score_month")
+        .drop_duplicates("IDENTIFYCODE", keep="last")
+        .drop(columns="score_month")
     )
 
-    df["IDENTIFYCODE"] = (
-        df["IDENTIFYCODE"].astype("string")
-        .str.replace(r"\.0$", "", regex=True)
-        .str.zfill(8)
+
+scores = client_map.copy()
+
+for score_col in ["LIAB_PRIMARY", "ASSETS_PRIMARY", "FX_PRIMARY"]:
+    scores = scores.merge(
+        get_latest_score(scores_all, score_col),
+        how="left",
+        on="IDENTIFYCODE"
     )
 
-    return df
-
-
-income = normalize_ids(income)
-fx_clients = normalize_ids(fx_clients)
-
-liabilities_scores = normalize_ids(liabilities_scores)
-assets_scores = normalize_ids(assets_scores)
-fx_scores = normalize_ids(fx_scores)
-
-
-
-
-
-scores = (
-    liabilities_scores[
-        ["CONTRAGENTID", "IDENTIFYCODE", "PRIMARY"]
-    ].rename(columns={"PRIMARY": "LIABILITIES_PRIMARY"})
-
-    .merge(
-        assets_scores[
-            ["CONTRAGENTID", "IDENTIFYCODE", "PRIMARY"]
-        ].rename(columns={"PRIMARY": "ASSETS_PRIMARY"}),
-        on=["CONTRAGENTID", "IDENTIFYCODE"],
-        how="outer"
-    )
-
-    .merge(
-        fx_scores[
-            ["CONTRAGENTID", "IDENTIFYCODE", "PRIMARY"]
-        ].rename(columns={"PRIMARY": "FX_PRIMARY"}),
-        on=["CONTRAGENTID", "IDENTIFYCODE"],
-        how="outer"
-    )
+scores = scores.dropna(
+    subset=["LIAB_PRIMARY", "ASSETS_PRIMARY", "FX_PRIMARY"],
+    how="all"
 )
 
 
+income_parts = []
+
+for month in INCOME_MONTHS:
+    try:
+        part = read_income(month).copy()
+        income_parts.append(part)
+
+        print(f"{month}: income OK, rows = {len(part):,}")
+
+    except FileNotFoundError:
+        print(f"{month}: income file not found")
+
+income_all = pd.concat(income_parts, ignore_index=True)
 
 
-
-usage = (
-    income.groupby(["CONTRAGENTID", "IDENTIFYCODE"], as_index=False)
+income_usage = (
+    income_all
+    .groupby("CONTRAGENTID", as_index=False)
     .agg(
-        USED_LIABILITIES=("LIABILITIES_INCOME", lambda x: (x.fillna(0) > 0).any()),
-        USED_ASSETS=("ASSETS_INCOME", lambda x: (x.fillna(0) > 0).any())
+        USED_LIABILITIES=(
+            "INCOME_LIABILITIES",
+            lambda x: x.fillna(0).gt(0).any()
+        ),
+        USED_ASSETS=(
+            "INCOME_ASSETS",
+            lambda x: x.fillna(0).gt(0).any()
+        )
     )
 )
+
+
+dataset_exp = pd.read_csv(
+    r"M:\Controlling\Data_Science_Projects\Corp_Liabilities\Data\dataset_2026_06_wo_income.csv",
+    dtype={
+        "CONTRAGENTID": "string",
+        "IDENTIFYCODE": "string"
+    }
+)
+
+dataset_exp = normalize_identifycode(dataset_exp)
+dataset_exp = normalize_contragentid(dataset_exp)
+
+dataset_exp["FX_NB_6M"] = pd.to_numeric(
+    dataset_exp["FX_NB_6M"],
+    errors="coerce"
+).fillna(0)
 
 fx_usage = (
-    fx_clients.groupby(["CONTRAGENTID", "IDENTIFYCODE"], as_index=False)
-    ["FX_NB_6M"].max()
+    dataset_exp
+    .groupby(
+        ["IDENTIFYCODE", "CONTRAGENTID"],
+        as_index=False
+    )
+    .agg(
+        USED_FX=("FX_NB_6M", lambda x: x.gt(0).any())
+    )
 )
 
-fx_usage["USED_FX"] = fx_usage["FX_NB_6M"].fillna(0) > 0
-fx_usage = fx_usage.drop(columns="FX_NB_6M")
 
-usage = usage.merge(
-    fx_usage,
-    on=["CONTRAGENTID", "IDENTIFYCODE"],
-    how="outer"
+validation_all = (
+    scores
+    .merge(
+        income_usage,
+        how="left",
+        on="CONTRAGENTID"
+    )
+    .merge(
+        fx_usage,
+        how="left",
+        on=["IDENTIFYCODE", "CONTRAGENTID"]
+    )
 )
 
-usage[["USED_LIABILITIES", "USED_ASSETS", "USED_FX"]] = (
-    usage[["USED_LIABILITIES", "USED_ASSETS", "USED_FX"]]
+target_cols = [
+    "USED_LIABILITIES",
+    "USED_ASSETS",
+    "USED_FX"
+]
+
+validation_all[target_cols] = (
+    validation_all[target_cols]
     .fillna(False)
+    .astype(bool)
 )
 
 
-validation_dataset = scores.merge(
-    usage,
-    on=["CONTRAGENTID", "IDENTIFYCODE"],
-    how="inner"
-)
-
-product_flags = {
+PRODUCT_FLAGS = {
     "Liabilities": "USED_LIABILITIES",
     "Assets": "USED_ASSETS",
     "FX": "USED_FX"
 }
 
-validation_dataset["USED_PRODUCT"] = validation_dataset.apply(
-    lambda row: ", ".join(
-        product for product, flag in product_flags.items()
-        if row[flag]
-    ) or np.nan,
+
+def get_actual_products(row):
+    products = [
+        product
+        for product, flag_col in PRODUCT_FLAGS.items()
+        if row[flag_col]
+    ]
+
+    return ", ".join(products) if products else "None"
+
+
+validation_all["actual_product"] = validation_all.apply(
+    get_actual_products,
     axis=1
 )
 
-validation_dataset = validation_dataset[
+validation_all["n_actual_products"] = (
+    validation_all[target_cols]
+    .sum(axis=1)
+)
+
+
+validation_all = validation_all[
     [
         "IDENTIFYCODE",
         "CONTRAGENTID",
-        "LIABILITIES_PRIMARY",
+
+        "LIAB_PRIMARY",
         "ASSETS_PRIMARY",
         "FX_PRIMARY",
-        "USED_PRODUCT"
+
+        "USED_LIABILITIES",
+        "USED_ASSETS",
+        "USED_FX",
+
+        "actual_product",
+        "n_actual_products"
     ]
 ]
-
-
-validation_dataset["USED_PRODUCT"].value_counts(dropna=False)
-
-final_columns = [
-    "IDENTIFYCODE",
-    "CONTRAGENTID",
-    "LIABILITIES_PRIMARY",
-    "ASSETS_PRIMARY",
-    "FX_PRIMARY",
-    "USED_LIABILITIES",
-    "USED_ASSETS",
-    "USED_FX",
-    "USED_PRODUCT"
-]
-
-validation_dataset = validation_dataset[final_columns]
