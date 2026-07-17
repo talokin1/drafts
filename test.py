@@ -1,73 +1,199 @@
-def make_recommendations(df, thresholds):
-    def recommend_client(row):
-        recommended = [
-            product
-            for product, score_column in PRODUCTS.items()
-            if (
-                pd.notna(row[score_column])
-                and row[score_column] >= thresholds[product]
-            )
-        ]
+import numpy as np
+import pandas as pd
 
-        return ", ".join(recommended) if recommended else "NONE"
-
-    return df.apply(recommend_client, axis=1)
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.metrics import precision_recall_curve
 
 
-validation_rule["RECOMMENDED_PRODUCT"] = make_recommendations(
-    validation_rule,
-    thresholds
-)
+PRODUCTS = {
+    "LIABILITIES": "LIAB_PRIMARY",
+    "ASSETS": "ASSETS_PRIMARY",
+    "FX": "FX_PRIMARY",
+}
 
-validation_rule["RECOMMENDED_PRODUCT"].value_counts()
+BETA = 0.5
+N_SPLITS = 5       # validation ≈ 20%
+RANDOM_STATE = 42
+
+data = full_dataset.copy()
 
 
-
-
-
-
-
-def to_product_set(value):
+def normalize_target(value):
     if pd.isna(value) or value == "NONE":
-        return set()
+        return "NONE"
 
-    return {
+    selected = {
         product.strip()
-        for product in value.split(",")
+        for product in str(value).split(",")
     }
 
+    # Фіксований порядок продуктів
+    selected = [
+        product
+        for product in PRODUCTS
+        if product in selected
+    ]
 
-validation_rule["CORRECT_RECOMMENDATION"] = [
-    to_product_set(actual) == to_product_set(recommended)
-    for actual, recommended in zip(
-        validation_rule["ACTUAL_PRODUCT"],
-        validation_rule["RECOMMENDED_PRODUCT"]
-    )
-]
+    return ", ".join(selected) if selected else "NONE"
 
-print(
-    "Exact match:",
-    validation_rule["CORRECT_RECOMMENDATION"].mean()
+
+data["ACTUAL_PRODUCT"] = (
+    data["ACTUAL_PRODUCT"]
+    .apply(normalize_target)
 )
 
+# Окремий target для кожного продукту
 for product in PRODUCTS:
-    y_true = validation_rule[f"TARGET_{product}"]
-
-    y_pred = (
-        validation_rule["RECOMMENDED_PRODUCT"]
-        .apply(lambda value: product in to_product_set(value))
-        .astype(int)
-    )
-
-    print(
-        product,
-        "| precision:", round(
-            precision_score(y_true, y_pred, zero_division=0), 3
-        ),
-        "| recall:", round(
-            recall_score(y_true, y_pred, zero_division=0), 3
-        ),
-        "| f1:", round(
-            f1_score(y_true, y_pred, zero_division=0), 3
+    data[f"TARGET_{product}"] = (
+        data["ACTUAL_PRODUCT"]
+        .apply(
+            lambda value: int(
+                product in {
+                    x.strip()
+                    for x in value.split(",")
+                }
+            )
         )
     )
+
+splitter = StratifiedGroupKFold(
+    n_splits=N_SPLITS,
+    shuffle=True,
+    random_state=RANDOM_STATE,
+)
+
+train_idx, validation_idx = next(
+    splitter.split(
+        X=data,
+        y=data["ACTUAL_PRODUCT"],
+        groups=data["IDENTIFYCODE"],
+    )
+)
+
+train_data = (
+    data.iloc[train_idx]
+    .reset_index(drop=True)
+)
+
+validation_data = (
+    data.iloc[validation_idx]
+    .reset_index(drop=True)
+)
+
+print("Train:", train_data.shape)
+print("Validation:", validation_data.shape)
+
+print(
+    "Клієнтів одночасно у train і validation:",
+    len(
+        set(train_data["IDENTIFYCODE"])
+        & set(validation_data["IDENTIFYCODE"])
+    )
+)
+
+distribution = pd.concat(
+    [
+        data["ACTUAL_PRODUCT"]
+        .value_counts(normalize=True)
+        .rename("FULL"),
+
+        train_data["ACTUAL_PRODUCT"]
+        .value_counts(normalize=True)
+        .rename("TRAIN"),
+
+        validation_data["ACTUAL_PRODUCT"]
+        .value_counts(normalize=True)
+        .rename("VALIDATION"),
+    ],
+    axis=1,
+).fillna(0)
+
+display(distribution.round(4))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def find_threshold(y_true, scores, beta=0.5):
+    mask = scores.notna()
+
+    y = y_true.loc[mask].to_numpy()
+    score = scores.loc[mask].to_numpy()
+
+    precision, recall, thresholds = precision_recall_curve(
+        y,
+        score,
+    )
+
+    if len(thresholds) == 0:
+        return 1.0
+
+    f_beta = (
+        (1 + beta ** 2) * precision[:-1] * recall[:-1]
+        / (
+            beta ** 2 * precision[:-1]
+            + recall[:-1]
+            + 1e-12
+        )
+    )
+
+    return float(thresholds[np.argmax(f_beta)])
+
+
+thresholds = {}
+
+for product, score_column in PRODUCTS.items():
+    thresholds[product] = find_threshold(
+        y_true=train_data[f"TARGET_{product}"],
+        scores=train_data[score_column],
+        beta=BETA,
+    )
+
+print(thresholds)
+
+def make_recommendations(df, thresholds):
+    recommendations = []
+
+    for _, row in df.iterrows():
+        selected = []
+
+        for product, score_column in PRODUCTS.items():
+            score = row[score_column]
+
+            if (
+                pd.notna(score)
+                and score >= thresholds[product]
+            ):
+                selected.append(product)
+
+        recommendations.append(
+            ", ".join(selected)
+            if selected
+            else "NONE"
+        )
+
+    return recommendations
+
+
+train_data["RECOMMENDED_PRODUCT"] = make_recommendations(
+    train_data,
+    thresholds,
+)
+
+validation_data["RECOMMENDED_PRODUCT"] = make_recommendations(
+    validation_data,
+    thresholds,
+)
+
+validation_data["RECOMMENDED_PRODUCT"].value_counts()
