@@ -1,199 +1,155 @@
 import numpy as np
 import pandas as pd
 
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import (
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    cross_val_predict
+)
+from sklearn.pipeline import make_pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import precision_recall_curve
 
 
-PRODUCTS = {
-    "LIABILITIES": "LIAB_PRIMARY",
-    "ASSETS": "ASSETS_PRIMARY",
-    "FX": "FX_PRIMARY",
-}
+FEATURES = [
+    "LIAB_PRIMARY",
+    "ASSETS_PRIMARY",
+    "FX_PRIMARY"
+]
 
-BETA = 0.5
-N_SPLITS = 5       # validation ≈ 20%
-RANDOM_STATE = 42
+PRODUCTS = ["LIABILITIES", "ASSETS", "FX"]
 
 data = full_dataset.copy()
 
 
-def normalize_target(value):
-    if pd.isna(value) or value == "NONE":
-        return "NONE"
+# ============================================================
+# 1. MULTI-LABEL TARGET
+# ============================================================
 
-    selected = {
+def parse_products(value):
+    if pd.isna(value) or value == "NONE":
+        return set()
+
+    return {
         product.strip()
         for product in str(value).split(",")
     }
 
-    # Фіксований порядок продуктів
-    selected = [
-        product
-        for product in PRODUCTS
-        if product in selected
-    ]
 
-    return ", ".join(selected) if selected else "NONE"
-
-
-data["ACTUAL_PRODUCT"] = (
-    data["ACTUAL_PRODUCT"]
-    .apply(normalize_target)
-)
-
-# Окремий target для кожного продукту
 for product in PRODUCTS:
     data[f"TARGET_{product}"] = (
         data["ACTUAL_PRODUCT"]
-        .apply(
-            lambda value: int(
-                product in {
-                    x.strip()
-                    for x in value.split(",")
-                }
-            )
-        )
+        .apply(lambda x: int(product in parse_products(x)))
     )
+
+
+# ============================================================
+# 2. РЕПРЕЗЕНТАТИВНИЙ GROUP SPLIT
+# ============================================================
 
 splitter = StratifiedGroupKFold(
-    n_splits=N_SPLITS,
+    n_splits=5,
     shuffle=True,
-    random_state=RANDOM_STATE,
+    random_state=42
 )
 
-train_idx, validation_idx = next(
+train_idx, valid_idx = next(
     splitter.split(
-        X=data,
-        y=data["ACTUAL_PRODUCT"],
-        groups=data["IDENTIFYCODE"],
+        data[FEATURES],
+        data["ACTUAL_PRODUCT"],
+        groups=data["IDENTIFYCODE"]
     )
 )
 
-train_data = (
-    data.iloc[train_idx]
-    .reset_index(drop=True)
-)
-
-validation_data = (
-    data.iloc[validation_idx]
-    .reset_index(drop=True)
-)
-
-print("Train:", train_data.shape)
-print("Validation:", validation_data.shape)
-
-print(
-    "Клієнтів одночасно у train і validation:",
-    len(
-        set(train_data["IDENTIFYCODE"])
-        & set(validation_data["IDENTIFYCODE"])
-    )
-)
-
-distribution = pd.concat(
-    [
-        data["ACTUAL_PRODUCT"]
-        .value_counts(normalize=True)
-        .rename("FULL"),
-
-        train_data["ACTUAL_PRODUCT"]
-        .value_counts(normalize=True)
-        .rename("TRAIN"),
-
-        validation_data["ACTUAL_PRODUCT"]
-        .value_counts(normalize=True)
-        .rename("VALIDATION"),
-    ],
-    axis=1,
-).fillna(0)
-
-display(distribution.round(4))
+train = data.iloc[train_idx].copy()
+validation = data.iloc[valid_idx].copy()
 
 
+# ============================================================
+# 3. ТРИ НЕЗАЛЕЖНІ МОДЕЛІ
+# ============================================================
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-def find_threshold(y_true, scores, beta=0.5):
-    mask = scores.notna()
-
-    y = y_true.loc[mask].to_numpy()
-    score = scores.loc[mask].to_numpy()
-
-    precision, recall, thresholds = precision_recall_curve(
-        y,
-        score,
-    )
-
-    if len(thresholds) == 0:
-        return 1.0
-
-    f_beta = (
-        (1 + beta ** 2) * precision[:-1] * recall[:-1]
-        / (
-            beta ** 2 * precision[:-1]
-            + recall[:-1]
-            + 1e-12
-        )
-    )
-
-    return float(thresholds[np.argmax(f_beta)])
-
-
+models = {}
 thresholds = {}
 
-for product, score_column in PRODUCTS.items():
-    thresholds[product] = find_threshold(
-        y_true=train_data[f"TARGET_{product}"],
-        scores=train_data[score_column],
-        beta=BETA,
+for product in PRODUCTS:
+
+    y_train = train[f"TARGET_{product}"]
+
+    model = make_pipeline(
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        LogisticRegression(
+            class_weight="balanced",
+            max_iter=2000,
+            random_state=42
+        )
     )
 
-print(thresholds)
+    # OOF-прогнози лише для вибору threshold
+    cv = StratifiedKFold(
+        n_splits=5,
+        shuffle=True,
+        random_state=42
+    )
 
-def make_recommendations(df, thresholds):
-    recommendations = []
+    oof_probability = cross_val_predict(
+        model,
+        train[FEATURES],
+        y_train,
+        cv=cv,
+        method="predict_proba"
+    )[:, 1]
 
-    for _, row in df.iterrows():
-        selected = []
+    precision, recall, threshold_values = precision_recall_curve(
+        y_train,
+        oof_probability
+    )
 
-        for product, score_column in PRODUCTS.items():
-            score = row[score_column]
+    f1 = (
+        2 * precision[:-1] * recall[:-1]
+        / (precision[:-1] + recall[:-1] + 1e-10)
+    )
 
-            if (
-                pd.notna(score)
-                and score >= thresholds[product]
-            ):
-                selected.append(product)
+    threshold = threshold_values[np.argmax(f1)]
 
-        recommendations.append(
-            ", ".join(selected)
-            if selected
-            else "NONE"
-        )
+    model.fit(train[FEATURES], y_train)
 
-    return recommendations
+    models[product] = model
+    thresholds[product] = threshold
 
 
-train_data["RECOMMENDED_PRODUCT"] = make_recommendations(
-    train_data,
-    thresholds,
+print("Thresholds:", thresholds)
+
+
+for product in PRODUCTS:
+
+    validation[f"PROB_{product}"] = (
+        models[product]
+        .predict_proba(validation[FEATURES])[:, 1]
+    )
+
+    validation[f"PRED_{product}"] = (
+        validation[f"PROB_{product}"]
+        >= thresholds[product]
+    )
+
+
+def get_recommendation(row):
+    recommended = [
+        product
+        for product in PRODUCTS
+        if row[f"PRED_{product}"]
+    ]
+
+    return ", ".join(recommended) if recommended else "NONE"
+
+
+validation["RECOMMENDED_PRODUCT"] = validation.apply(
+    get_recommendation,
+    axis=1
 )
 
-validation_data["RECOMMENDED_PRODUCT"] = make_recommendations(
-    validation_data,
-    thresholds,
-)
-
-validation_data["RECOMMENDED_PRODUCT"].value_counts()
+validation["RECOMMENDED_PRODUCT"].value_counts()
