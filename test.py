@@ -1,75 +1,73 @@
-import numpy as np
-import pandas as pd
+def make_recommendations(df, thresholds):
+    def recommend_client(row):
+        recommended = [
+            product
+            for product, score_column in PRODUCTS.items()
+            if (
+                pd.notna(row[score_column])
+                and row[score_column] >= thresholds[product]
+            )
+        ]
 
-from sklearn.metrics import (
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    f1_score
+        return ", ".join(recommended) if recommended else "NONE"
+
+    return df.apply(recommend_client, axis=1)
+
+
+validation_rule["RECOMMENDED_PRODUCT"] = make_recommendations(
+    validation_rule,
+    thresholds
 )
 
-
-PRODUCTS = {
-    "LIABILITIES": "LIAB_PRIMARY",
-    "ASSETS": "ASSETS_PRIMARY",
-    "FX": "FX_PRIMARY"
-}
-
-BETA = 0.5
+validation_rule["RECOMMENDED_PRODUCT"].value_counts()
 
 
-# 1. Створюємо окремий бінарний target для кожного продукту
-def add_targets(df):
-    df = df.copy()
 
-    for product in PRODUCTS:
-        df[f"TARGET_{product}"] = (
-            df["ACTUAL_PRODUCT"]
-            .fillna("NONE")
-            .str.split(",")
-            .apply(lambda values: product in [x.strip() for x in values])
-            .astype(int)
+
+
+
+
+def to_product_set(value):
+    if pd.isna(value) or value == "NONE":
+        return set()
+
+    return {
+        product.strip()
+        for product in value.split(",")
+    }
+
+
+validation_rule["CORRECT_RECOMMENDATION"] = [
+    to_product_set(actual) == to_product_set(recommended)
+    for actual, recommended in zip(
+        validation_rule["ACTUAL_PRODUCT"],
+        validation_rule["RECOMMENDED_PRODUCT"]
+    )
+]
+
+print(
+    "Exact match:",
+    validation_rule["CORRECT_RECOMMENDATION"].mean()
+)
+
+for product in PRODUCTS:
+    y_true = validation_rule[f"TARGET_{product}"]
+
+    y_pred = (
+        validation_rule["RECOMMENDED_PRODUCT"]
+        .apply(lambda value: product in to_product_set(value))
+        .astype(int)
+    )
+
+    print(
+        product,
+        "| precision:", round(
+            precision_score(y_true, y_pred, zero_division=0), 3
+        ),
+        "| recall:", round(
+            recall_score(y_true, y_pred, zero_division=0), 3
+        ),
+        "| f1:", round(
+            f1_score(y_true, y_pred, zero_division=0), 3
         )
-
-    return df
-
-
-train_rule = add_targets(train_data)
-validation_rule = add_targets(validation_data)
-
-
-# 2. Підбираємо threshold для одного продукту
-def find_threshold(y_true, scores, beta=0.5):
-    mask = scores.notna()
-
-    y_true = y_true[mask].values
-    scores = scores[mask].values
-
-    precision, recall, thresholds = precision_recall_curve(
-        y_true,
-        scores
     )
-
-    f_beta = (
-        (1 + beta**2) * precision[:-1] * recall[:-1]
-        / (
-            beta**2 * precision[:-1]
-            + recall[:-1]
-            + 1e-12
-        )
-    )
-
-    return float(thresholds[np.argmax(f_beta)])
-
-
-thresholds = {
-    product: find_threshold(
-        train_rule[f"TARGET_{product}"],
-        train_rule[score_column],
-        beta=BETA
-    )
-    for product, score_column in PRODUCTS.items()
-}
-
-print("Thresholds:")
-print(thresholds)
