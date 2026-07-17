@@ -1,22 +1,24 @@
-test = clients[["IDENTIFYCODE"]].merge(
-    liabs[["IDENTIFYCODE", "PRIMARY"]],
-    how="left",
-    on="IDENTIFYCODE"
+final_clients = (
+    clients[["IDENTIFYCODE"]]
+    
+    .merge(
+        liab_clients[["IDENTIFYCODE", "PRIMARY"]]
+        .rename(columns={"PRIMARY": "LIAB_PRIMARY"}),
+        how="left",
+        on="IDENTIFYCODE"
+    )
+    
+    .merge(
+        assets_clients[["IDENTIFYCODE", "PRIMARY"]]
+        .rename(columns={"PRIMARY": "ASSETS_PRIMARY"}),
+        how="left",
+        on="IDENTIFYCODE"
+    )
+    
+    .merge(
+        fx_clients[["IDENTIFYCODE", "PROB_TO_FX"]]
+        .rename(columns={"PROB_TO_FX": "FX_PRIMARY"}),
+        how="left",
+        on="IDENTIFYCODE"
+    )
 )
-liab_clients = test[test["PRIMARY"].notna()]
-
-
-test = clients[["IDENTIFYCODE"]].merge(
-    assets[["IDENTIFYCODE", "PRIMARY"]],
-    how="left",
-    on="IDENTIFYCODE"
-)
-assets_clients = test[test["PRIMARY"].notna()]
-
-
-test = clients[["IDENTIFYCODE"]].merge(
-    fx[["IDENTIFYCODE", "PROB_TO_FX"]],
-    how="left",
-    on="IDENTIFYCODE"
-)
-fx_clients = test[test["PROB_TO_FX"].notna()]
