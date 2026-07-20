@@ -1,80 +1,95 @@
+import numpy as np
 import pandas as pd
-from pathlib import Path
+
+df = dataset.copy()
+
+SCORES = {
+    "LIABILITIES": ("LIAB_PRIMARY", 0.30),
+    "ASSETS": ("ASSETS_PRIMARY", 0.30),
+    "FX": ("FX_PRIMARY", 0.59),
+}
+
+# Залишаємо клієнтів, для яких є хоча б один propensity score
+score_cols = [x[0] for x in SCORES.values()]
+
+df = df[
+    df[score_cols].notna().any(axis=1)
+].copy()
 
 
-def norm_id(s):
-    return (
-        s.astype("string")
-        .str.strip()
-        .str.replace(r"\.0$", "", regex=True)
-        .str.zfill(8)
-    )
+# 1. Фактичне використання продуктів
+df["USE_LIABILITIES"] = df["AV_LIABILITIES"].fillna(0).gt(0)
+df["USE_ASSETS"] = df["CONTRACTED_AMOUNT_LCY"].fillna(0).gt(0)
+df["USE_FX"] = df["FX_NB_6M"].fillna(0).gt(0)
+
+use_cols = [
+    "USE_LIABILITIES",
+    "USE_ASSETS",
+    "USE_FX",
+]
+
+df["USED_ANY_PRODUCT"] = df[use_cols].any(axis=1)
 
 
-def get_last_scores(files, score_col, new_score_col):
-    parts = []
+# 2. Multi-label target
+def get_actual_product(row):
+    products = []
 
-    for file in files:
-        month = file.parent.name
+    if row["USE_LIABILITIES"]:
+        products.append("LIABILITIES")
 
-        if file.suffix == ".csv":
-            df = pd.read_csv(
-                file,
-                usecols=["IDENTIFYCODE", score_col],
-                dtype={"IDENTIFYCODE": "string"}
-            )
-        else:
-            df = pd.read_parquet(
-                file,
-                columns=["IDENTIFYCODE", score_col]
-            )
+    if row["USE_ASSETS"]:
+        products.append("ASSETS")
 
-        df["IDENTIFYCODE"] = norm_id(df["IDENTIFYCODE"])
-        df["MONTH"] = month
-        parts.append(df)
+    if row["USE_FX"]:
+        products.append("FX")
 
-    result = pd.concat(parts, ignore_index=True)
-
-    # Прибираємо порожні значення ДО вибору останнього місяця
-    result = (
-        result
-        .dropna(subset=[score_col])
-        .sort_values("MONTH")
-        .drop_duplicates("IDENTIFYCODE", keep="last")
-        .rename(columns={
-            score_col: new_score_col,
-            "MONTH": f"{new_score_col}_MONTH"
-        })
-    )
-
-    return result
+    return ", ".join(products) if products else "NOTHING_TO_DO"
 
 
-liabs_last = get_last_scores(
-    LIABS_BASE.glob("*/real_combined_result.csv"),
-    score_col="PRIMARY",
-    new_score_col="LIAB_PRIMARY"
-)
-
-assets_last = get_last_scores(
-    ASSETS_BASE.glob("*/model_*.parquet"),
-    score_col="PRIMARY",
-    new_score_col="ASSETS_PRIMARY"
-)
-
-fx_last = get_last_scores(
-    FX_BASE.glob("*/fx_external_*.parquet"),
-    score_col="PROB_TO_FX",
-    new_score_col="FX_PRIMARY"
+df["ACTUAL_PRODUCT"] = df.apply(
+    get_actual_product,
+    axis=1,
 )
 
 
-
-dataset["IDENTIFYCODE"] = norm_id(dataset["IDENTIFYCODE"])
-
-dataset = (
-    dataset
-    .merge(liabs_last, on="IDENTIFYCODE", how="left")
-    .merge(assets_last, on="IDENTIFYCODE", how="left")
-    .merge(fx_last, on="IDENTIFYCODE", how="left")
+# 3. Високий propensity score без залучення
+df["HIGH_PRIMARY"] = (
+    (df["LIAB_PRIMARY"] >= 0.30)
+    | (df["ASSETS_PRIMARY"] >= 0.30)
+    | (df["FX_PRIMARY"] >= 0.59)
 )
+
+
+# 4. Тип запису
+df["RECORD_TYPE"] = np.select(
+    [
+        df["USED_ANY_PRODUCT"],
+        ~df["USED_ANY_PRODUCT"] & df["HIGH_PRIMARY"],
+        ~df["USED_ANY_PRODUCT"] & ~df["HIGH_PRIMARY"],
+    ],
+    [
+        "POSITIVE",
+        "BAD_RECORD",
+        "NOTHING_TO_DO",
+    ],
+)
+
+
+df["RECORD_TYPE"].value_counts()
+
+
+
+model_dataset = df[
+    df["RECORD_TYPE"] != "BAD_RECORD"
+][
+    [
+        "CONTRAGENTID",
+        "IDENTIFYCODE",
+        "LIAB_PRIMARY",
+        "ASSETS_PRIMARY",
+        "FX_PRIMARY",
+        "ACTUAL_PRODUCT",
+        "RECORD_TYPE",
+    ]
+].copy()
