@@ -25,14 +25,22 @@ model_dataset["TARGET_SET"] = (
 )
 
 
-# Стратифікуємо за повною комбінацією продуктів
-stratify_label = model_dataset["ACTUAL_PRODUCT"].copy()
+stratify_label = model_dataset["ACTUAL_PRODUCT"].astype(str).copy()
 
 counts = stratify_label.value_counts()
-stratify_label = stratify_label.where(
-    stratify_label.map(counts) >= 2,
-    "RARE"
+
+# Рідкісні комбінації об'єднуємо
+stratify_label = stratify_label.mask(
+    stratify_label.map(counts) < 2,
+    "OTHER_POSITIVE"
 )
+
+if stratify_label.value_counts().min() < 2:
+    stratify_label = np.where(
+        model_dataset["ACTUAL_PRODUCT"].eq("NOTHING_TO_DO"),
+        "NOTHING_TO_DO",
+        "POSITIVE"
+    )
 
 train, test = train_test_split(
     model_dataset,
@@ -43,7 +51,6 @@ train, test = train_test_split(
 
 train = train.copy()
 test = test.copy()
-
 
 # Percentile рахуємо за розподілом train
 for product, score_col in SCORE_COLS.items():
