@@ -1,3 +1,66 @@
+from sklearn.model_selection import train_test_split
+
+df = model_dataset.copy()
+
+df = df[~df["RECORD_TYPE"].isin(["BAD_RECORD", "BAD"])].copy()
+
+
+def parse_products(value):
+    if pd.isna(value):
+        return {"NOTHING_TO_DO"}
+
+    products = {
+        x.strip().upper()
+        for x in str(value).split(",")
+        if x.strip()
+    }
+
+    return products or {"NOTHING_TO_DO"}
+
+
+df["TARGET_SET"] = df["ACTUAL_PRODUCT"].apply(parse_products)
+
+df["STRATIFY_TARGET"] = df["TARGET_SET"].apply(
+    lambda x: ",".join(sorted(x))
+)
+
+counts = df["STRATIFY_TARGET"].value_counts()
+
+df["STRATIFY_GROUP"] = df["STRATIFY_TARGET"].where(
+    df["STRATIFY_TARGET"].map(counts) >= 5,
+    "OTHER"
+)
+
+group_counts = df["STRATIFY_GROUP"].value_counts()
+single_mask = df["STRATIFY_GROUP"].map(group_counts) < 2
+
+df_main = df[~single_mask].copy()
+df_single = df[single_mask].copy()
+
+train, test = train_test_split(
+    df_main,
+    test_size=0.20,
+    random_state=42,
+    stratify=df_main["STRATIFY_GROUP"]
+)
+
+# Одиничні випадки додаємо тільки в train
+train = pd.concat(
+    [train, df_single],
+    ignore_index=True
+)
+
+
+
+
+
+
+
+
+
+
+
+
 from __future__ import annotations
 
 from pathlib import Path
