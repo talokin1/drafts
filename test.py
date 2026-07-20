@@ -1,118 +1,80 @@
-from sklearn.metrics import (
-    precision_score,
-    recall_score,
-    f1_score,
-    hamming_loss
-)
-
-target_cols = [f"TARGET_{p}" for p in PRODUCTS]
-pred_cols = [f"PRED_{p}" for p in PRODUCTS]
-
-y_true = validation[target_cols].astype(int).values
-y_pred = validation[pred_cols].astype(int).values
+import pandas as pd
+from pathlib import Path
 
 
-# Метрики по кожному продукту
-metrics = []
-
-for i, product in enumerate(PRODUCTS):
-    metrics.append({
-        "PRODUCT": product,
-        "PRECISION": precision_score(
-            y_true[:, i], y_pred[:, i], zero_division=0
-        ),
-        "RECALL": recall_score(
-            y_true[:, i], y_pred[:, i], zero_division=0
-        ),
-        "F1": f1_score(
-            y_true[:, i], y_pred[:, i], zero_division=0
-        )
-    })
-
-metrics_df = pd.DataFrame(metrics)
-
-display(metrics_df.round(3))
-
-
-
-
-exact_match = (y_true == y_pred).all(axis=1).mean()
-
-micro_f1 = f1_score(
-    y_true,
-    y_pred,
-    average="micro",
-    zero_division=0
-)
-
-macro_f1 = f1_score(
-    y_true,
-    y_pred,
-    average="macro",
-    zero_division=0
-)
-
-hamming = hamming_loss(y_true, y_pred)
-
-print("Exact match:", round(exact_match, 3))
-print("Micro F1:", round(micro_f1, 3))
-print("Macro F1:", round(macro_f1, 3))
-print("Hamming loss:", round(hamming, 3))
-
-
-
-
-actual_none = y_true.sum(axis=1) == 0
-pred_none = y_pred.sum(axis=1) == 0
-
-print(
-    "NONE precision:",
-    round(
-        precision_score(
-            actual_none,
-            pred_none,
-            zero_division=0
-        ),
-        3
+def norm_id(s):
+    return (
+        s.astype("string")
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .str.zfill(8)
     )
-)
 
-print(
-    "NONE recall:",
-    round(
-        recall_score(
-            actual_none,
-            pred_none,
-            zero_division=0
-        ),
-        3
+
+def get_last_scores(files, score_col, new_score_col):
+    parts = []
+
+    for file in files:
+        month = file.parent.name
+
+        if file.suffix == ".csv":
+            df = pd.read_csv(
+                file,
+                usecols=["IDENTIFYCODE", score_col],
+                dtype={"IDENTIFYCODE": "string"}
+            )
+        else:
+            df = pd.read_parquet(
+                file,
+                columns=["IDENTIFYCODE", score_col]
+            )
+
+        df["IDENTIFYCODE"] = norm_id(df["IDENTIFYCODE"])
+        df["MONTH"] = month
+        parts.append(df)
+
+    result = pd.concat(parts, ignore_index=True)
+
+    # Прибираємо порожні значення ДО вибору останнього місяця
+    result = (
+        result
+        .dropna(subset=[score_col])
+        .sort_values("MONTH")
+        .drop_duplicates("IDENTIFYCODE", keep="last")
+        .rename(columns={
+            score_col: new_score_col,
+            "MONTH": f"{new_score_col}_MONTH"
+        })
     )
+
+    return result
+
+
+liabs_last = get_last_scores(
+    LIABS_BASE.glob("*/real_combined_result.csv"),
+    score_col="PRIMARY",
+    new_score_col="LIAB_PRIMARY"
 )
 
-print(
-    "NONE F1:",
-    round(
-        f1_score(
-            actual_none,
-            pred_none,
-            zero_division=0
-        ),
-        3
-    )
+assets_last = get_last_scores(
+    ASSETS_BASE.glob("*/model_*.parquet"),
+    score_col="PRIMARY",
+    new_score_col="ASSETS_PRIMARY"
+)
+
+fx_last = get_last_scores(
+    FX_BASE.glob("*/fx_external_*.parquet"),
+    score_col="PROB_TO_FX",
+    new_score_col="FX_PRIMARY"
 )
 
 
-comparison = pd.concat(
-    [
-        validation["ACTUAL_PRODUCT"]
-        .value_counts()
-        .rename("ACTUAL"),
 
-        validation["RECOMMENDED_PRODUCT"]
-        .value_counts()
-        .rename("PREDICTED")
-    ],
-    axis=1
-).fillna(0).astype(int)
+dataset["IDENTIFYCODE"] = norm_id(dataset["IDENTIFYCODE"])
 
-display(comparison)
+dataset = (
+    dataset
+    .merge(liabs_last, on="IDENTIFYCODE", how="left")
+    .merge(assets_last, on="IDENTIFYCODE", how="left")
+    .merge(fx_last, on="IDENTIFYCODE", how="left")
+)
