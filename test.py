@@ -1,54 +1,93 @@
 from sklearn.model_selection import train_test_split
 
-df = model_dataset.copy()
+PRODUCT_NAMES = ["LIABILITIES", "ASSETS", "FX"]
 
-df = df[~df["RECORD_TYPE"].isin(["BAD_RECORD", "BAD"])].copy()
+SCORE_COLS = {
+    "LIABILITIES": "LIAB_PRIMARY",
+    "ASSETS": "ASSETS_PRIMARY",
+    "FX": "FX_PRIMARY",
+}
 
 
-def parse_products(value):
-    if pd.isna(value):
-        return {"NOTHING_TO_DO"}
+# Multi-label target: "LIABILITIES, FX" -> {"LIABILITIES", "FX"}
+def make_target_set(value):
+    if pd.isna(value) or value == "NOTHING_TO_DO":
+        return set()
 
-    products = {
-        x.strip().upper()
-        for x in str(value).split(",")
-        if x.strip()
+    return {
+        product.strip()
+        for product in value.split(",")
     }
 
-    return products or {"NOTHING_TO_DO"}
 
-
-df["TARGET_SET"] = df["ACTUAL_PRODUCT"].apply(parse_products)
-
-df["STRATIFY_TARGET"] = df["TARGET_SET"].apply(
-    lambda x: ",".join(sorted(x))
+model_dataset["TARGET_SET"] = (
+    model_dataset["ACTUAL_PRODUCT"].apply(make_target_set)
 )
 
-counts = df["STRATIFY_TARGET"].value_counts()
 
-df["STRATIFY_GROUP"] = df["STRATIFY_TARGET"].where(
-    df["STRATIFY_TARGET"].map(counts) >= 5,
-    "OTHER"
+# Стратифікуємо за повною комбінацією продуктів
+stratify_label = model_dataset["ACTUAL_PRODUCT"].copy()
+
+counts = stratify_label.value_counts()
+stratify_label = stratify_label.where(
+    stratify_label.map(counts) >= 2,
+    "RARE"
 )
-
-group_counts = df["STRATIFY_GROUP"].value_counts()
-single_mask = df["STRATIFY_GROUP"].map(group_counts) < 2
-
-df_main = df[~single_mask].copy()
-df_single = df[single_mask].copy()
 
 train, test = train_test_split(
-    df_main,
+    model_dataset,
     test_size=0.20,
     random_state=42,
-    stratify=df_main["STRATIFY_GROUP"]
+    stratify=stratify_label
 )
 
-# Одиничні випадки додаємо тільки в train
-train = pd.concat(
-    [train, df_single],
-    ignore_index=True
-)
+train = train.copy()
+test = test.copy()
+
+
+# Percentile рахуємо за розподілом train
+for product, score_col in SCORE_COLS.items():
+    pct_col = f"{product}_PCT"
+
+    train[pct_col] = train[score_col].rank(
+        pct=True,
+        method="average"
+    )
+
+    train_scores = np.sort(
+        train[score_col].dropna().to_numpy()
+    )
+
+    test[pct_col] = test[score_col].apply(
+        lambda score: (
+            np.searchsorted(train_scores, score, side="right")
+            / len(train_scores)
+            if pd.notna(score) and len(train_scores) > 0
+            else np.nan
+        )
+    )
+
+
+PCT_COLS = [f"{product}_PCT" for product in PRODUCT_NAMES]
+
+print("Train:", train.shape)
+print("Test:", test.shape)
+
+display(pd.concat(
+    [
+        train["ACTUAL_PRODUCT"].value_counts(normalize=True)
+            .rename("TRAIN"),
+        test["ACTUAL_PRODUCT"].value_counts(normalize=True)
+            .rename("TEST")
+    ],
+    axis=1
+).fillna(0).round(4))
+
+
+
+
+
+
 
 
 
