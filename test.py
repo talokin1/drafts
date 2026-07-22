@@ -1,145 +1,172 @@
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
-from sklearn.model_selection import train_test_split, RepeatedStratifiedKFold
-from sklearn.metrics import precision_score, recall_score, fbeta_score, average_precision_score, roc_auc_score, confusion_matrix
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.metrics import average_precision_score, precision_score, recall_score, fbeta_score, confusion_matrix, classification_report
 
-SEED = 42
-TEST_SIZE = 0.20
-TARGET_PRECISION = 0.75
-MIN_SELECTED = 5
-PREM_WEIGHT = 2.0
-HNWI_WEIGHT = 4.0
+MIN_RECALL = 0.15
+TOP_K = 50
+SEEDS = (42, 52, 62)
+OUTER_SPLITS = 4
+INNER_SPLITS = 3
 
-df = client_df.copy()
-df["TARGET"] = (df["SEGMENT"] == "HNWI").astype(int)
+# Додай сюди всі поля, які прямо або опосередковано використовувалися для створення SEGMENT
+LEAKAGE_COLS = ["MOBILEPHONE", "group_id", "SEGMENT", "CONTRAGENTID", "is_hnwi", "IS_HNWI", "BALANCE"]
 
-LEAKAGE_COLS = ["SEGMENT", "TARGET", "MOBILEPHONE", "group_id"]
-FEATURE_COLS = [c for c in df.columns if c not in LEAKAGE_COLS and df[c].nunique(dropna=False) > 1]
+data = client_df.reset_index(drop=True).copy()
+groups = data["group_id"].astype(str)
 
-X = df[FEATURE_COLS].copy().replace([np.inf, -np.inf], np.nan)
-y = df["TARGET"].copy()
-segments = df["SEGMENT"].copy()
+# MASS = 0, PREM = 0, HNWI = 1
+y = data["SEGMENT"].eq("HNWI").astype(int)
+X = data.drop(columns=LEAKAGE_COLS, errors="ignore").replace([np.inf, -np.inf], np.nan)
 
-cat_cols = X.select_dtypes(include=["object", "category", "string"]).columns.tolist()
-bool_cols = X.select_dtypes(include=["bool"]).columns.tolist()
+cat_cols = X.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+for col in cat_cols: X[col] = X[col].astype("string").fillna("Missing").astype(str)
 
-for col in cat_cols:
-    X[col] = X[col].astype("string").fillna("__MISSING__").astype(str)
+print(pd.crosstab(data["SEGMENT"], y, rownames=["SEGMENT"], colnames=["TARGET"]))
 
-for col in bool_cols:
-    X[col] = X[col].astype(int)
 
-X_train, X_test, y_train, y_test, segment_train, segment_test = train_test_split(X, y, segments, test_size=TEST_SIZE, stratify=y, random_state=SEED)
+def create_model(seed):
+    return CatBoostClassifier(
+        loss_function="Logloss",
+        iterations=700,
+        depth=4,
+        learning_rate=0.03,
+        l2_leaf_reg=10,
+        random_strength=1,
+        auto_class_weights="SqrtBalanced",
+        random_seed=seed,
+        verbose=False,
+        allow_writing_files=False
+    )
 
-def get_weights(segment):
-    return segment.map({"MASS": 1.0, "PREM": PREM_WEIGHT, "HNWI": HNWI_WEIGHT}).astype(float)
 
-def create_model(seed=SEED):
-    return CatBoostClassifier(loss_function="Logloss", eval_metric="PRAUC", iterations=500, depth=3, learning_rate=0.03, l2_leaf_reg=10, random_strength=1.5, min_data_in_leaf=15, bootstrap_type="Bayesian", random_seed=seed, verbose=False, allow_writing_files=False)
+def binary_oof(X, y, groups, n_splits):
+    oof_probability = np.zeros(len(X))
 
-def get_oof_predictions(X, y, segments):
-    cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=SEED)
-    prediction_sum = np.zeros(len(X))
-    prediction_count = np.zeros(len(X))
+    for seed in SEEDS:
+        seed_probability = np.zeros(len(X))
+        cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
-    for fold, (train_idx, valid_idx) in enumerate(cv.split(X, y)):
-        model = create_model(SEED + fold)
-        model.fit(X.iloc[train_idx], y.iloc[train_idx], cat_features=cat_cols, sample_weight=get_weights(segments.iloc[train_idx]))
-        prediction_sum[valid_idx] += model.predict_proba(X.iloc[valid_idx])[:, 1]
-        prediction_count[valid_idx] += 1
+        for fold, (train_idx, valid_idx) in enumerate(cv.split(X, y, groups)):
+            model = create_model(seed + fold)
+            model.fit(X.iloc[train_idx], y.iloc[train_idx], cat_features=cat_cols)
+            seed_probability[valid_idx] = model.predict_proba(X.iloc[valid_idx])[:, 1]
 
-    return prediction_sum / prediction_count
+        oof_probability += seed_probability / len(SEEDS)
 
-def find_threshold(y_true, probabilities, target_precision=TARGET_PRECISION, min_selected=MIN_SELECTED):
-    results = []
+    return oof_probability
 
-    for threshold in np.unique(probabilities):
-        predictions = (probabilities >= threshold).astype(int)
-        selected = predictions.sum()
 
-        if selected < min_selected:
+def choose_threshold(y_true, probability, min_recall=MIN_RECALL):
+    best = None
+
+    for threshold in np.unique(probability):
+        prediction = (probability >= threshold).astype(int)
+
+        if prediction.sum() == 0:
             continue
 
-        precision = precision_score(y_true, predictions, zero_division=0)
-        recall = recall_score(y_true, predictions, zero_division=0)
-        f05 = fbeta_score(y_true, predictions, beta=0.5, zero_division=0)
-        results.append([threshold, precision, recall, f05, selected])
+        recall = recall_score(y_true, prediction, zero_division=0)
 
-    results = pd.DataFrame(results, columns=["threshold", "precision", "recall", "f0.5", "selected"])
-    valid = results[results["precision"] >= target_precision]
+        if recall < min_recall:
+            continue
 
-    if len(valid):
-        best = valid.sort_values(["recall", "precision", "threshold"], ascending=[False, False, False]).iloc[0]
-    else:
-        best = results.sort_values(["f0.5", "precision", "recall"], ascending=[False, False, False]).iloc[0]
+        precision = precision_score(y_true, prediction, zero_division=0)
+        f05 = fbeta_score(y_true, prediction, beta=0.5, zero_division=0)
+        key = (precision, f05, recall, -prediction.sum())
 
-    return best, results
+        if best is None or key > best[0]:
+            best = (key, threshold)
 
-def evaluate(y_true, probabilities, threshold):
-    predictions = (probabilities >= threshold).astype(int)
-    tn, fp, fn, tp = confusion_matrix(y_true, predictions, labels=[0, 1]).ravel()
+    if best is None:
+        raise ValueError("Не знайдено threshold із заданим minimum recall")
 
-    return pd.Series({
-        "threshold": threshold,
-        "precision": precision_score(y_true, predictions, zero_division=0),
-        "recall": recall_score(y_true, predictions, zero_division=0),
-        "f0.5": fbeta_score(y_true, predictions, beta=0.5, zero_division=0),
-        "pr_auc": average_precision_score(y_true, probabilities),
-        "roc_auc": roc_auc_score(y_true, probabilities),
-        "selected": predictions.sum(),
-        "TP": tp,
-        "FP": fp,
-        "FN": fn,
-        "TN": tn
-    })
+    return best[1]
 
-def precision_at_k(y_true, probabilities, k):
-    k = min(k, len(y_true))
-    top_idx = np.argsort(probabilities)[::-1][:k]
-    return np.asarray(y_true)[top_idx].mean()
 
-oof_probabilities = get_oof_predictions(X_train.reset_index(drop=True), y_train.reset_index(drop=True), segment_train.reset_index(drop=True))
-best_threshold, threshold_table = find_threshold(y_train.reset_index(drop=True), oof_probabilities)
-threshold = float(best_threshold["threshold"])
+outer_probability = np.zeros(len(X))
+outer_prediction = np.zeros(len(X), dtype=int)
+outer_thresholds = []
 
-final_model = create_model()
-final_model.fit(X_train, y_train, cat_features=cat_cols, sample_weight=get_weights(segment_train))
+outer_cv = StratifiedGroupKFold(n_splits=OUTER_SPLITS, shuffle=True, random_state=42)
 
-test_probabilities = final_model.predict_proba(X_test)[:, 1]
-test_predictions = (test_probabilities >= threshold).astype(int)
+for outer_fold, (train_idx, valid_idx) in enumerate(outer_cv.split(X, y, groups)):
+    X_train, X_valid = X.iloc[train_idx], X.iloc[valid_idx]
+    y_train = y.iloc[train_idx]
+    groups_train = groups.iloc[train_idx]
 
-metrics = pd.DataFrame({
-    "OOF_TRAIN": evaluate(y_train, oof_probabilities, threshold),
-    "TEST": evaluate(y_test, test_probabilities, threshold)
-}).T
+    inner_probability = binary_oof(X_train, y_train, groups_train, INNER_SPLITS)
+    threshold = choose_threshold(y_train, inner_probability)
+    valid_probability = np.zeros(len(valid_idx))
 
-ranking_metrics = pd.DataFrame({
-    "K": [10, 20, 50],
-    "Precision@K": [precision_at_k(y_test, test_probabilities, k) for k in [10, 20, 50]],
-    "Lift@K": [precision_at_k(y_test, test_probabilities, k) / y_test.mean() for k in [10, 20, 50]]
+    for seed in SEEDS:
+        model = create_model(10_000 + outer_fold * 100 + seed)
+        model.fit(X_train, y_train, cat_features=cat_cols)
+        valid_probability += model.predict_proba(X_valid)[:, 1] / len(SEEDS)
+
+    outer_probability[valid_idx] = valid_probability
+    outer_prediction[valid_idx] = (valid_probability >= threshold).astype(int)
+    outer_thresholds.append(threshold)
+
+
+top_k = min(TOP_K, len(y))
+top_idx = np.argsort(outer_probability)[::-1][:top_k]
+
+metrics = pd.Series({
+    "threshold_mean": np.mean(outer_thresholds),
+    "threshold_median": np.median(outer_thresholds),
+    "average_precision": average_precision_score(y, outer_probability),
+    "precision": precision_score(y, outer_prediction, zero_division=0),
+    "recall": recall_score(y, outer_prediction, zero_division=0),
+    "f0.5": fbeta_score(y, outer_prediction, beta=0.5, zero_division=0),
+    f"precision_at_{top_k}": y.iloc[top_idx].mean(),
+    f"recall_at_{top_k}": y.iloc[top_idx].sum() / y.sum(),
+    "predicted_hnwi": outer_prediction.sum()
 })
 
-test_result = df.loc[X_test.index, ["MOBILEPHONE", "SEGMENT"]].copy()
-test_result["HNWI_SCORE"] = test_probabilities
-test_result["HNWI_PREDICTION"] = test_predictions
-test_result = test_result.sort_values("HNWI_SCORE", ascending=False)
+display(metrics.round(4))
+display(pd.Series(outer_thresholds, name="threshold_by_outer_fold").round(4))
 
-false_positives = test_result[(test_result["SEGMENT"] != "HNWI") & (test_result["HNWI_PREDICTION"] == 1)]
-false_negatives = test_result[(test_result["SEGMENT"] == "HNWI") & (test_result["HNWI_PREDICTION"] == 0)]
+display(pd.DataFrame(
+    confusion_matrix(y, outer_prediction, labels=[0, 1]),
+    index=["TRUE_NOT_HNWI", "TRUE_HNWI"],
+    columns=["PRED_NOT_HNWI", "PRED_HNWI"]
+))
 
-feature_importance = pd.DataFrame({
-    "feature": FEATURE_COLS,
-    "importance": final_model.get_feature_importance()
-}).sort_values("importance", ascending=False)
+print(classification_report(
+    y,
+    outer_prediction,
+    labels=[0, 1],
+    target_names=["NOT_HNWI", "HNWI"],
+    digits=3,
+    zero_division=0
+))
 
-print("Обраний threshold:")
-print(best_threshold)
-print("\nМетрики:")
-print(metrics.round(4))
-print("\nRanking-метрики:")
-print(ranking_metrics.round(4))
-print("\nFalse positives за сегментами:")
-print(false_positives["SEGMENT"].value_counts())
-print("\nTop features:")
-print(feature_importance.head(15))
+
+# Фінальна production-модель після чесного outer-CV оцінювання
+production_oof = binary_oof(X, y, groups, OUTER_SPLITS)
+production_threshold = choose_threshold(y, production_oof)
+
+final_models = []
+
+for seed in SEEDS:
+    model = create_model(seed)
+    model.fit(X, y, cat_features=cat_cols)
+    final_models.append(model)
+
+print("Production threshold:", round(production_threshold, 4))
+
+
+def predict_hnwi(new_data):
+    X_new = new_data.reindex(columns=X.columns).copy().replace([np.inf, -np.inf], np.nan)
+
+    for col in cat_cols:
+        X_new[col] = X_new[col].astype("string").fillna("Missing").astype(str)
+
+    score = np.mean([model.predict_proba(X_new)[:, 1] for model in final_models], axis=0)
+
+    return pd.DataFrame({
+        "hnwi_score": score,
+        "pred_hnwi": (score >= production_threshold).astype(int)
+    }, index=new_data.index)
