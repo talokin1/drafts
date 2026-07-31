@@ -1,96 +1,77 @@
 import re
+import unicodedata
 import pandas as pd
-import networkx as nx
 
-ID_COL = "IDENTIFYCODE"
-NAME_COL = "FIRM_NAME"
-
-ROLE_COLUMNS = {
-    "BENEFICIARY": [f"BENEFICIARY_NAME_{i}" for i in range(1, 6)],
-    "FOUNDER": [f"FOUNDER_NAME_{i}" for i in range(1, 6)]
-}
-
-LEGAL_ENTITY_WORDS = r"\b(ТОВ|ПП|ПАТ|ПРАТ|АТ|ФГ|КП|ДП|КОМПАНІЯ|ПІДПРИЄМСТВО|ГОСПОДАРСТВО|LIMITED|LLC|LTD)\b"
+LEGAL_MARKERS = re.compile(r"\b(ТОВАРИСТВО|ПІДПРИЄМСТВО|КОМПАНІЯ|ФЕРМЕРСЬКЕ|ГОСПОДАРСТВО|ТОВ|ПП|ПАТ|ПРАТ|АТ|ФГ|КП|ДП|LLC|LTD)\b")
 
 
-def normalize_name(value):
-    if pd.isna(value):
-        return pd.NA
+def normalize_pib(value):
+    if pd.isna(value): return pd.NA
 
-    value = str(value).upper().strip()
-    value = value.replace("Ё", "Е").replace("Ґ", "Г").replace("’", "'").replace("`", "'").replace("ʼ", "'")
-    value = re.sub(r"[^А-ЯІЇЄA-Z'\-\s]", " ", value)
+    value = unicodedata.normalize("NFKC", str(value)).upper()
+    value = value.replace("Ё", "Е").replace("’", "'").replace("`", "'").replace("ʼ", "'")
+    value = re.sub(r"[^А-ЯІЇЄҐA-Z'\-\s]", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
 
-    return value if len(value.split()) >= 2 else pd.NA
+    if len(value.split()) < 2 or LEGAL_MARKERS.search(value): return pd.NA
+    return value
 
 
-def find_business_groups(dataset, include_founders=True):
-    roles = ["BENEFICIARY", "FOUNDER"] if include_founders else ["BENEFICIARY"]
-    companies = dataset[[ID_COL, NAME_COL]].drop_duplicates(ID_COL).copy()
-    links = []
+def find_person_company_matches(dataset):
+    id_col, company_col = "IDENTIFYCODE", "FIRM_NAME"
 
-    for role in roles:
-        columns = [col for col in ROLE_COLUMNS[role] if col in dataset.columns]
+    specifications = [
+        ("BENEFICIARY_NAME_", None, "Бенефіціар"),
+        ("FOUNDER_NAME_", None, "Засновник"),
+        ("AUTHORISED_NAME_", "AUTHORISED_ROLE_", "Уповноважена особа")
+    ]
 
-        for col in columns:
-            part = dataset[[ID_COL, NAME_COL, col]].rename(columns={col: "PERSON_NAME"}).copy()
-            part["ROLE"] = role
-            links.append(part)
+    parts = []
 
-    links = pd.concat(links, ignore_index=True)
-    links["PERSON_KEY"] = links["PERSON_NAME"].map(normalize_name)
-    links = links.dropna(subset=[ID_COL, "PERSON_KEY"])
-    links = links[~links["PERSON_KEY"].str.contains(LEGAL_ENTITY_WORDS, regex=True, na=False)]
-    links = links.drop_duplicates([ID_COL, "PERSON_KEY", "ROLE"])
+    for name_prefix, role_prefix, default_role in specifications:
+        for i in range(1, 6):
+            name_col = f"{name_prefix}{i}"
+            role_col = f"{role_prefix}{i}" if role_prefix else None
 
-    person_counts = links.groupby("PERSON_KEY")[ID_COL].nunique()
-    links = links[links["PERSON_KEY"].isin(person_counts[person_counts >= 2].index)]
+            if name_col not in dataset.columns: continue
 
-    graph = nx.Graph()
+            selected = [id_col, company_col, name_col]
+            if role_col in dataset.columns: selected.append(role_col)
 
-    for row in links.itertuples(index=False):
-        graph.add_edge(f"COMPANY:{getattr(row, ID_COL)}", f"PERSON:{row.PERSON_KEY}")
+            part = dataset[selected].rename(columns={name_col: "PERSON_NAME"}).copy()
 
-    group_map = {}
+            if role_col in part.columns:
+                part = part.rename(columns={role_col: "ROLE"})
+                part["ROLE"] = part["ROLE"].astype("string").str.strip().replace("", pd.NA).fillna(default_role)
+            else:
+                part["ROLE"] = default_role
 
-    for group_number, component in enumerate(nx.connected_components(graph), start=1):
-        company_ids = [node.replace("COMPANY:", "") for node in component if node.startswith("COMPANY:")]
+            parts.append(part)
 
-        if len(company_ids) < 2:
-            continue
+    links = pd.concat(parts, ignore_index=True)
+    links[id_col] = links[id_col].astype("string").str.replace(r"\.0$", "", regex=True).str.zfill(8)
+    links["PERSON_NAME"] = links["PERSON_NAME"].map(normalize_pib)
+    links = links.dropna(subset=[id_col, "PERSON_NAME"])
+    links = links.drop_duplicates(["PERSON_NAME", id_col, "ROLE"])
 
-        group_id = f"BG_{group_number:06d}"
+    links = links.groupby(["PERSON_NAME", id_col, company_col], as_index=False)["ROLE"].agg(lambda x: " | ".join(sorted(set(x))))
+    links = links[links.groupby("PERSON_NAME")[id_col].transform("nunique").ge(2)].copy()
 
-        for company_id in company_ids:
-            group_map[company_id] = group_id
+    if links.empty: return pd.DataFrame(columns=["PERSON_NAME"])
 
-    companies["BUSINESS_GROUP_ID"] = companies[ID_COL].map(group_map)
+    links["COMPANY"] = links[company_col].fillna("Без назви") + " [" + links[id_col] + "]"
+    links = links.sort_values(["PERSON_NAME", "COMPANY"])
+    links["N"] = links.groupby("PERSON_NAME").cumcount().add(1)
 
-    result = links.merge(companies[[ID_COL, "BUSINESS_GROUP_ID"]], on=ID_COL, how="left")
-    result = result.dropna(subset=["BUSINESS_GROUP_ID"])
+    companies = links.pivot(index="PERSON_NAME", columns="N", values="COMPANY").add_prefix("COMPANY_")
+    roles = links.pivot(index="PERSON_NAME", columns="N", values="ROLE").add_prefix("ROLE_")
 
-    group_summary = (
-        result.groupby("BUSINESS_GROUP_ID")
-        .agg(
-            GROUP_SIZE=(ID_COL, "nunique"),
-            COMPANIES=(NAME_COL, lambda x: " | ".join(sorted(set(x.dropna())))),
-            RELATED_PERSONS=("PERSON_KEY", lambda x: " | ".join(sorted(set(x)))),
-            CONNECTION_ROLES=("ROLE", lambda x: " | ".join(sorted(set(x))))
-        )
-        .reset_index()
-        .sort_values("GROUP_SIZE", ascending=False)
-    )
+    result = pd.concat([companies, roles], axis=1)
+    result.columns.name = None
 
-    company_groups = (
-        result.groupby(["BUSINESS_GROUP_ID", ID_COL, NAME_COL], as_index=False)
-        .agg(
-            MATCHED_PERSONS=("PERSON_KEY", lambda x: " | ".join(sorted(set(x)))),
-            MATCHED_ROLES=("ROLE", lambda x: " | ".join(sorted(set(x))))
-        )
-    )
+    max_n = int(links["N"].max())
+    ordered_columns = [column for i in range(1, max_n + 1) for column in (f"COMPANY_{i}", f"ROLE_{i}")]
 
-    return company_groups, group_summary, links
+    return result.reset_index()[["PERSON_NAME"] + ordered_columns]
 
-
-company_groups, group_summary, person_links = find_business_groups(dataset)
+matches_df = find_person_company_matches(dataset)
