@@ -76,6 +76,126 @@ audit_summary, feature_report, high_corr_pairs = dataset_audit(clients, target=T
 audit_summary
 
 
+import re
+import pandas as pd
+
+
+def remove_redundant_features(
+    df: pd.DataFrame,
+    high_corr_pairs: pd.DataFrame,
+    protected_cols: list[str] | None = None,
+    leakage_cols: list[str] | None = None,
+    quasi_constant_threshold: float = 0.995,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    protected_cols = set(protected_cols or [])
+    leakage_cols = set(leakage_cols or [])
+
+    missing_rate = df.isna().mean()
+    nunique = df.nunique(dropna=True)
+
+    drop_reason = {}
+
+    # 1. Leakage
+    for col in leakage_cols & set(df.columns):
+        if col not in protected_cols:
+            drop_reason[col] = "leakage"
+
+    # 2. Константні та майже константні ознаки
+    for col in df.columns:
+        if col in protected_cols or col in drop_reason:
+            continue
+
+        value_counts = df[col].value_counts(normalize=True, dropna=False)
+
+        if nunique[col] <= 1:
+            drop_reason[col] = "constant"
+        elif not value_counts.empty and value_counts.iloc[0] >= quasi_constant_threshold:
+            drop_reason[col] = f"quasi_constant_{value_counts.iloc[0]:.3f}"
+
+    valid_features = set(df.columns) - set(drop_reason)
+
+    # 3. Побудова графа корельованих ознак
+    parent = {col: col for col in valid_features}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        root_x, root_y = find(x), find(y)
+        if root_x != root_y:
+            parent[root_y] = root_x
+
+    for row in high_corr_pairs.itertuples(index=False):
+        feature_1, feature_2 = row.feature_1, row.feature_2
+
+        if feature_1 in valid_features and feature_2 in valid_features:
+            union(feature_1, feature_2)
+
+    corr_groups = {}
+
+    for col in valid_features:
+        root = find(col)
+        corr_groups.setdefault(root, []).append(col)
+
+    def has_merge_suffix(col: str) -> int:
+        return int(bool(re.search(r"_(x|y)$", col)))
+
+    def feature_rank(col: str):
+        return (
+            0 if col in protected_cols else 1,
+            has_merge_suffix(col),
+            missing_rate[col],
+            -nunique[col],
+            len(col),
+        )
+
+    # 4. Залишаємо одну ознаку з кожної корельованої групи
+    for group in corr_groups.values():
+        if len(group) <= 1:
+            continue
+
+        keep_col = min(group, key=feature_rank)
+
+        for col in group:
+            if col != keep_col and col not in protected_cols:
+                drop_reason[col] = f"correlated_with_{keep_col}"
+
+    columns_to_drop = list(drop_reason)
+    cleaned_df = df.drop(columns=columns_to_drop)
+
+    removal_log = pd.DataFrame(
+        {
+            "feature": columns_to_drop,
+            "reason": [drop_reason[col] for col in columns_to_drop],
+            "missing_rate": [missing_rate.get(col) for col in columns_to_drop],
+            "nunique": [nunique.get(col) for col in columns_to_drop],
+        }
+    ).sort_values(["reason", "feature"]).reset_index(drop=True)
+
+    return cleaned_df, removal_log
+
+protected_cols = ["CONTRAGENTID", "TARGET"]
+
+df_clean, removal_log = remove_redundant_features(
+    df=df,
+    high_corr_pairs=high_corr_pairs,
+    protected_cols=protected_cols,
+    leakage_cols=leakage_cols,
+    quasi_constant_threshold=0.995,
+)
+
+
+
+
+
+
+
+
+
+
 
 
 
