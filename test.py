@@ -1,5 +1,8 @@
 import numpy as np
-from artifact_tool import Workbook, SpreadsheetFile
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.formatting.rule import DataBarRule
+
 
 def create_golden_report(
     model,
