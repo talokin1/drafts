@@ -427,6 +427,41 @@ def create_golden_report(
     ws.column_dimensions["E"].width = 15
     ws.column_dimensions["F"].width = 45
 
+    # ============================================================
+    # 7. INFERENCE
+    # ============================================================
+    ws = wb.create_sheet("Inference")
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    inf = inference_result[
+        ["CONTRAGENTID", "GOLDEN_SCORE", "MODEL_CLASS", "GOLDEN_PROPENSITY_PCT", "GOLDEN_RANK"]
+    ].copy()
+
+    write_table(
+        ws,
+        1,
+        1,
+        ["CLIENT_ID", "GOLDEN_SCORE", "MODEL_CLASS", "GOLDEN_PROPENSITY_%", "GOLDEN_RANK"],
+        inf.values.tolist()
+    )
+
+    last_row = len(inf) + 1
+
+    # Score як %
+    for row in range(2, last_row + 1):
+        ws.cell(row, 2).number_format = "0.00%"
+
+    # Фільтр
+    ws.auto_filter.ref = f"A1:E{last_row}"
+
+    # Ширина колонок
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 22
+    ws.column_dimensions["E"].width = 16
+
 
     wb.save(output_path)
     print(f"Report saved: {output_path}")
